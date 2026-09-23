@@ -21,6 +21,69 @@ BENIGN_HIDDEN_IMPORTS = {
 }
 HIDDEN_IMPORT_RE = re.compile(r'Hidden import "([^"]+)" not found')
 
+DEFAULT_EXCLUDES = [
+    # Heavy AI/ML frameworks accidentally pulled in via transitive hooks (e.g. sympy)
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "tensorflow",
+    "tensorboard",
+    "keras",
+    "sympy",
+    "IPython",
+    "jupyter",
+    "notebook",
+    "matplotlib",
+    "PIL",
+    "Pillow",
+    "cv2",
+    "pandas",
+    "jinja2",
+    "fsspec",
+    "cryptography",
+    "pydantic",
+    "pytest",
+    "unittest",
+    # Unused Qt modules (PyDSP only uses Core, Gui, Widgets)
+    "PySide6.QtWebEngineWidgets",
+    "PySide6.QtWebEngineCore",
+    "PySide6.QtWebEngineQuick",
+    "PySide6.Qt3DCore",
+    "PySide6.Qt3DRender",
+    "PySide6.Qt3DInput",
+    "PySide6.Qt3DLogic",
+    "PySide6.Qt3DExtras",
+    "PySide6.Qt3DAnimation",
+    "PySide6.QtQuick",
+    "PySide6.QtQuickWidgets",
+    "PySide6.QtQml",
+    "PySide6.QtNetwork",
+    "PySide6.QtSql",
+    "PySide6.QtMultimedia",
+    "PySide6.QtMultimediaWidgets",
+    "PySide6.QtDesigner",
+    "PySide6.QtXml",
+    "PySide6.QtOpenGL",
+    "PySide6.QtOpenGLWidgets",
+    "PySide6.QtPdf",
+    "PySide6.QtPdfWidgets",
+    "PySide6.QtCharts",
+    "PySide6.QtSpatialAudio",
+    "PySide6.QtSensors",
+    "PySide6.QtPositioning",
+    "PySide6.QtBluetooth",
+    "PySide6.QtNfc",
+    "PySide6.QtSerialPort",
+    "PySide6.QtTest",
+    # Unused heavy SciPy subpackages
+    "scipy.spatial",
+    "scipy.optimize",
+    "scipy.stats",
+    "scipy.integrate",
+    "scipy.ndimage",
+    "scipy.sparse",
+]
+
 
 class Colors:
     HEADER = "\033[95m"
@@ -415,6 +478,13 @@ def pyinstaller_command(args, icon_path):
     for item in args.hidden_import:
         command.append(f"--hidden-import={item}")
 
+    if not getattr(args, "no_default_excludes", False):
+        for mod in DEFAULT_EXCLUDES:
+            command.append(f"--exclude-module={mod}")
+
+    for item in getattr(args, "exclude", []):
+        command.append(f"--exclude-module={item}")
+
     if args.debug_imports:
         command.append("--debug=imports")
 
@@ -461,6 +531,8 @@ def parse_args():
     parser.add_argument("--debug-imports", action="store_true", help="Enable PyInstaller import debug output.")
     parser.add_argument("--suppress-benign-warnings", action="store_true", help="Hide known harmless PyInstaller optional hidden-import warnings.")
     parser.add_argument("--hidden-import", action="append", default=[], help="Extra hidden import to pass to PyInstaller.")
+    parser.add_argument("--exclude", action="append", default=[], help="Extra module to exclude from PyInstaller bundle.")
+    parser.add_argument("--no-default-excludes", action="store_true", help="Disable default module exclusions.")
     parser.add_argument("--add-data", action="append", default=[], help=f"Extra PyInstaller data entry, e.g. source{data_separator()}dest.")
     return parser.parse_args()
 
