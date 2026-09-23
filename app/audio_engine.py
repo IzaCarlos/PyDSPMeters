@@ -84,9 +84,22 @@ class AudioEngine(QObject):
 
     @staticmethod
     def get_default_device() -> int | None:
-        """Get the default input device index."""
+        """Get the default input device index, preferring low-latency WASAPI on Windows."""
         try:
-            return sd.default.device[0]
+            def_idx = sd.default.device[0]
+            if def_idx < 0:
+                return None
+            if sys.platform == "win32":
+                info = sd.query_devices(def_idx)
+                host_name = sd.query_hostapis(info["hostapi"])["name"]
+                if "MME" in host_name:
+                    base_name = info["name"].split("(")[0].strip().lower()
+                    for i, d in enumerate(sd.query_devices()):
+                        if d["max_input_channels"] > 0:
+                            api = sd.query_hostapis(d["hostapi"])["name"]
+                            if "WASAPI" in api and d["name"].split("(")[0].strip().lower() == base_name:
+                                return i
+            return def_idx
         except Exception:
             return None
 
@@ -102,7 +115,9 @@ class AudioEngine(QObject):
         # Get device info to validate parameters
         try:
             if device_index is None:
-                device_index = sd.default.device[0]
+                device_index = self.get_default_device()
+                if device_index is None:
+                    device_index = sd.default.device[0]
             
             info = sd.query_devices(device_index, "input")
             max_ch = info.get("max_input_channels", 2)

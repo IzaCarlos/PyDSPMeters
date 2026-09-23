@@ -156,3 +156,43 @@ class TestFilters:
         filt = MultiBandFilter(sr)
         low, _, _ = filt.split(tone)
         assert np.max(np.abs(low)) < 0.2
+
+
+# ── Acceleration Tests ──────────────────────────────────────────────────────
+
+class TestAcceleration:
+    def test_prepare_oscilloscope_trace_shape_and_coords(self):
+        from app.dsp import accel
+        sig = np.sin(np.linspace(0, 2 * np.pi, 512, dtype=np.float32))
+        vals, gain = accel.prepare_oscilloscope_trace(sig, 256, 128, 0, 1.0, 1.0)
+
+        assert vals.shape == (128,)
+        assert np.all(vals >= -1.0)
+        assert np.all(vals <= 1.0)
+        assert gain > 0.0
+
+    def test_prepare_oscilloscope_trace_fallback_parity(self):
+        from app.dsp import accel
+        sig = np.sin(np.linspace(0, 4 * np.pi, 512, dtype=np.float32))
+        v_acc, g_acc = accel.prepare_oscilloscope_trace(sig, 256, 100, 0, 1.0, 1.0)
+        v_py, g_py = accel._prepare_oscilloscope_trace_py(sig, 256, 100, 0, 1.0, 1.0)
+
+        np.testing.assert_allclose(v_acc, v_py, atol=1e-3)
+        assert abs(g_acc - g_py) < 1e-4
+
+    def test_calculate_true_peak_intersample(self):
+        from app.dsp import accel
+        t = np.arange(100) / 44100.0
+        sig = (np.sin(2 * np.pi * 12000 * t) * 0.7071).astype(np.float32)
+        sample_peak = float(np.max(np.abs(sig)))
+        tp = accel.calculate_true_peak(sig)
+        assert tp >= 20.0 * np.log10(sample_peak) - 0.1
+
+    def test_calculate_true_peak_fallback_parity(self):
+        from app.dsp import accel
+        sig = np.sin(np.linspace(0, 20 * np.pi, 1024, dtype=np.float32))[:, np.newaxis]
+        tp_acc = accel.calculate_true_peak(sig)
+        tp_py = accel._calculate_true_peak_py(sig)
+        np.testing.assert_allclose(tp_acc, tp_py, atol=0.2)
+
+

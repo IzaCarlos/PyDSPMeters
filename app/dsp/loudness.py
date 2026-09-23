@@ -305,17 +305,5 @@ class LoudnessMeter:
         return self._true_peak_channels
 
     def _calculate_tp_channels(self, data: np.ndarray) -> np.ndarray:
-        """Estimate True Peak via 4x oversampling."""
-        if len(data) < 16:
-            return np.zeros(data.shape[1]) - 120.0
-        
-        try:
-            from scipy.signal import resample_poly
-            # 4x oversampling is standard for 'true peak' estimation
-            up = resample_poly(data, 4, 1, axis=0)
-            peaks = np.max(np.abs(up), axis=0)
-            return 20.0 * np.log10(np.clip(peaks, 1e-6, None))
-        except:
-            # Fallback to sample peak if scipy is having issues
-            peaks = np.max(np.abs(data), axis=0)
-            return 20.0 * np.log10(np.clip(peaks, 1e-6, None))
+        """Estimate True Peak via accelerated 4x oversampling."""
+        return dsp_accel.calculate_true_peak(data)

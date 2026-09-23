@@ -1,5 +1,6 @@
 import pytest
 from app.theme import Colors, apply_theme, build_stylesheet, THEME_PRESETS
+from app.theme import _valid_hex_color, _validate_heatmap_stops
 
 def test_apply_theme_midnight():
     apply_theme("Midnight")
@@ -39,3 +40,14 @@ def test_color_q_returns_qcolor():
 def test_with_alpha_returns_transparent_color():
     qc = Colors.with_alpha("#FF0000", 128)
     assert qc.alpha() == 128
+
+def test_theme_hex_validation_rejects_partial_colors():
+    assert _valid_hex_color("#00d4ff")
+    assert _valid_hex_color("#05000000")
+    assert not _valid_hex_color("#12")
+    assert not _valid_hex_color("00d4ff")
+
+def test_heatmap_validation_reports_bad_stops():
+    assert _validate_heatmap_stops([[0.0, "#000000"], [1.0, "#ffffff"]]) is None
+    assert "position" in _validate_heatmap_stops([[1.2, "#ffffff"]])
+    assert "color" in _validate_heatmap_stops([[0.5, "ffffff"]])

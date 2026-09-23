@@ -3,6 +3,8 @@ import os
 import re
 import sys
 import threading
+from dataclasses import dataclass
+from json import JSONDecodeError
 
 SETTINGS_FILE = "settings.json"
 APP_NAME = "PyDSPMeters"
@@ -20,6 +22,12 @@ class SettingsManager:
     """Manages application settings persistence using a JSON file."""
 
     _profile_name_override = None
+    _last_load_error = None
+
+    @dataclass(frozen=True)
+    class LoadError:
+        path: str
+        message: str
 
     @staticmethod
     def _profile_from_argv(argv=None):
@@ -181,13 +189,31 @@ class SettingsManager:
     @classmethod
     def load_from_file(cls, path):
         path = os.fspath(path)
+        cls._last_load_error = None
         if os.path.exists(path):
             try:
                 with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    settings = json.load(f)
+                if not isinstance(settings, dict):
+                    cls._last_load_error = cls.LoadError(
+                        path,
+                        "Settings files must contain a JSON object at the top level.",
+                    )
+                    return {}
+                return settings
+            except JSONDecodeError as e:
+                cls._last_load_error = cls.LoadError(
+                    path,
+                    f"Malformed JSON at line {e.lineno}, column {e.colno}: {e.msg}",
+                )
             except Exception as e:
+                cls._last_load_error = cls.LoadError(path, str(e))
                 print(f"Error loading settings: {e}")
         return {}
+
+    @classmethod
+    def get_last_load_error(cls):
+        return cls._last_load_error
 
     _save_lock = threading.Lock()
 

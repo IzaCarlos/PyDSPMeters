@@ -43,6 +43,8 @@ class StereometerModule(BaseModule):
         
         self._left = np.zeros(1024, dtype=np.float32)
         self._right = np.zeros(1024, dtype=np.float32)
+        self._left_xy = np.zeros(1024, dtype=np.float32)
+        self._right_xy = np.zeros(1024, dtype=np.float32)
         self._corr = 0.0
         self._mb_corr = {"low": 0.0, "mid": 0.0, "high": 0.0, "overall": 0.0}
         self._multiband = MultiBandFilter(sample_rate=audio_engine.sample_rate)
@@ -71,7 +73,7 @@ class StereometerModule(BaseModule):
             "rotation": self._rotation
         }
 
-    _VALID_DISPLAY_MODES = {"Vectorscope", "Lissajous"}
+    _VALID_DISPLAY_MODES = {"Vectorscope", "Lissajous", "XY Oscilloscope"}
     _VALID_COLOR_MODES = {"Static", "Multi-Band", "Multi-Band (RGB)"}
     _VALID_CORR_MODES = {"Single-Band", "Multi-Band"}
     _VALID_GUIDE_MODES = {"None", "Rhombus", "Circle", "Square"}
@@ -104,7 +106,7 @@ class StereometerModule(BaseModule):
         
         dm = menu.addMenu("Display Mode")
         dg = QActionGroup(self)
-        for d in ["Vectorscope", "Lissajous"]:
+        for d in ["Vectorscope", "Lissajous", "XY Oscilloscope"]:
             a = dm.addAction(d)
             a.setCheckable(True)
             a.setChecked(d == self._display_mode)
@@ -261,6 +263,9 @@ class StereometerModule(BaseModule):
         else:
             l_proc, r_proc = l_raw, r_raw
 
+        self._left_xy = l_proc - float(np.mean(l_proc))
+        self._right_xy = r_proc - float(np.mean(r_proc))
+
         # 2. Apply Custom Tukey Window (Very thin margin FFT window style)
         # This prevents sharp jumps at the edges of the buffer
         cache_key = (n, self._window_alpha)
@@ -273,7 +278,10 @@ class StereometerModule(BaseModule):
         self._left = (l_proc * win)
         self._right = (r_proc * win)
         if self._auto_zoom:
-            self._update_auto_zoom(self._left, self._right)
+            if self._display_mode == "XY Oscilloscope":
+                self._update_auto_zoom(self._left_xy, self._right_xy)
+            else:
+                self._update_auto_zoom(self._left, self._right)
         
         # 3. Smoothed Correlation
         new_corr = correlation(l_raw, r_raw)
@@ -304,6 +312,9 @@ class StereometerModule(BaseModule):
         if self._display_mode == "Vectorscope":
             dx = (left - right) * 0.5
             dy = (left + right) * 0.5
+        elif self._display_mode == "XY Oscilloscope":
+            dx = left
+            dy = right
         else:
             dx = right
             dy = left
@@ -406,10 +417,12 @@ class StereometerModule(BaseModule):
                 draw_rot_text("S", 0)
                 draw_rot_text("S", 180)
             else:
-                draw_rot_text("L", -90)
-                draw_rot_text("R", 90 if not self._halved_view else 0) # Adjust for halved view logic
-                draw_rot_text("L", 180)
-                draw_rot_text("R", 0)
+                x_label = "X" if self._display_mode == "XY Oscilloscope" else "R"
+                y_label = "Y" if self._display_mode == "XY Oscilloscope" else "L"
+                draw_rot_text(y_label, -90)
+                draw_rot_text(x_label, 90 if not self._halved_view else 0) # Adjust for halved view logic
+                draw_rot_text(y_label, 180)
+                draw_rot_text(x_label, 0)
 
         # Correlation bar
 
@@ -526,6 +539,10 @@ class StereometerModule(BaseModule):
                 painter.drawRect(QRectF(cx - radius, cy - radius, radius * 2, radius * 2))
 
     def _draw_scope_traces(self, painter, left, right, cx, cy, radius):
+        if self._display_mode == "XY Oscilloscope":
+            self._draw_trace(painter, self._left_xy, self._right_xy, cx, cy, radius, QColor(Colors.ACCENT), 220)
+            return
+
         if self._color_mode.startswith("Multi-Band"):
             low_l, mid_l, high_l = self._multiband.split(left)
             low_r, mid_r, high_r = self._multiband.split(right)
@@ -621,6 +638,39 @@ class StereometerModule(BaseModule):
             painter.setPen(QPen(QColor(color), 1.0))
             painter.setOpacity(alpha / 255.0)
             painter.drawPoints(points)
+
+        elif self._display_mode == "XY Oscilloscope":
+            dx = l_seg
+            dy = r_seg
+
+            if self._guide_mode == "Circle":
+                mag = np.sqrt(dx**2 + dy**2)
+                mask = mag > 1.0
+                dx[mask] /= mag[mask]
+                dy[mask] /= mag[mask]
+            else:
+                mask = (np.abs(dx) > 1.0) | (np.abs(dy) > 1.0)
+                if np.any(mask):
+                    div = np.maximum(np.abs(dx[mask]), np.abs(dy[mask]))
+                    dx[mask] /= div
+                    dy[mask] /= div
+
+            xs = cx + dx * radius
+            ys = cy - dy * radius
+            points = [QPointF(xs[i], ys[i]) for i in range(len(xs))]
+            if len(points) < 2:
+                painter.restore()
+                return
+
+            pen = QPen(QColor(color), 2.0)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            painter.setOpacity(alpha / 255.0 * 0.35)
+            painter.drawPolyline(points)
+
+            painter.setPen(QPen(QColor(color), 1.0))
+            painter.setOpacity(alpha / 255.0)
+            painter.drawPolyline(points)
             
         else:
             # 2. Lissajous (Polyline) - Shows Phase Curves

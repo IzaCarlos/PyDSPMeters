@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, QRectF, QPointF
 from app.base_module import BaseModule
 from app.modules import register_module
 from app.theme import Colors, Fonts
+from app.dsp import accel as dsp_accel
 
 
 @register_module("oscilloscope", "Oscilloscope")
@@ -139,23 +140,22 @@ class OscilloscopeModule(BaseModule):
             self._waveform_r[-n:] = r
 
     def _find_trigger(self, data):
-        """Find zero-crossing trigger point with sub-sample interpolation."""
+        """Find zero-crossing trigger point near the end of the buffer for lowest latency."""
         search_limit = len(data) - self._display_samples
-        if search_limit <= 0: return 0
-        
-        # Look for positive-going zero crossing
+        if search_limit <= 0:
+            return 0.0
+
         subset = data[:search_limit]
         crossings = np.where((subset[:-1] <= 0) & (subset[1:] > 0))[0]
-        
+
         if len(crossings) > 0:
-            idx = crossings[0]
-            # Simple linear interpolation for sub-sample trigger precision
-            y0, y1 = subset[idx], subset[idx+1]
+            idx = crossings[-1]
+            y0, y1 = subset[idx], subset[idx + 1]
             if abs(y1 - y0) > 1e-6:
                 frac = -y0 / (y1 - y0)
-                return idx + frac
+                return float(idx + frac)
             return float(idx)
-        return 0.0
+        return float(search_limit)
 
     def _get_channels(self):
         l, r = self._waveform_l, self._waveform_r
@@ -373,36 +373,39 @@ class OscilloscopeModule(BaseModule):
         return gain
 
     def _draw_trace(self, painter, ch, w, h, center, factor, color, vertical=False, trace_key=0):
-        trig = self._find_trigger(ch)
-        
-        # Use fractional interpolation for the display segment
-        t_indices = np.linspace(trig, trig + self._display_samples, self._display_samples, endpoint=False)
-        seg = np.interp(t_indices, self._sample_indices, ch)
-        
-        if len(seg) < 2: return
-        
-        # Determine number of points based on the long axis
         long_axis = h if vertical else w
-        num_points = min(len(seg), int(long_axis))
-        if num_points < 2: return
-        
-        indices = np.linspace(0, len(seg) - 1, num_points).astype(np.int32)
-        downsampled = seg[indices]
-        
-        gain = self._get_trace_gain(downsampled, trace_key)
-        vals = np.clip(downsampled * gain, -1.0, 1.0)
-        
-        t_coords = np.linspace(0, long_axis, num_points)
+        num_points = min(self._display_samples, int(long_axis))
+        if num_points < 2 or len(ch) < 2:
+            return
+
+        gain_mode_str = getattr(self, "_gain_mode", "Auto Fit")
+        gain_mode_id = 2 if gain_mode_str == "Fixed" else (1 if gain_mode_str == "Auto Shared" else 0)
+        key = "shared" if gain_mode_id == 1 else trace_key
+        prev_gain = self._auto_gains.get(key, 1.0)
+        manual_gain = float(getattr(self, "_manual_gain", 1.0))
+
+        vals, new_gain = dsp_accel.prepare_oscilloscope_trace(
+            ch, self._display_samples, num_points, gain_mode_id, manual_gain, prev_gain
+        )
+        self._auto_gains[key] = new_gain
+
+        actual_pts = len(vals)
+        if actual_pts < 2:
+            return
+
+        t_coords = np.linspace(0, long_axis, actual_pts)
         v_coords = center - vals * factor
-        
+
         if vertical:
-            points = [QPointF(v_coords[i], t_coords[i]) for i in range(num_points)]
+            points = [QPointF(v_coords[i], t_coords[i]) for i in range(actual_pts)]
         else:
-            points = [QPointF(t_coords[i], v_coords[i]) for i in range(num_points)]
-        
-        gc = QColor(color); gc.setAlpha(40)
+            points = [QPointF(t_coords[i], v_coords[i]) for i in range(actual_pts)]
+
+        gc = QColor(color)
+        gc.setAlpha(40)
         painter.setPen(QPen(gc, 3.0))
         painter.drawPolyline(points)
-        
+
         painter.setPen(QPen(QColor(color), 1.5))
         painter.drawPolyline(points)
+

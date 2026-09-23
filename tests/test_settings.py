@@ -54,6 +54,18 @@ def test_load_corrupt_json(tmp_path, monkeypatch):
     
     loaded = SettingsManager.load()
     assert loaded == {}
+    error = SettingsManager.get_last_load_error()
+    assert error is not None
+    assert "line 1" in error.message
+
+def test_load_rejects_non_object_json(tmp_path):
+    test_file = tmp_path / "list.json"
+    test_file.write_text("[1, 2, 3]")
+
+    loaded = SettingsManager.load_from_file(test_file)
+
+    assert loaded == {}
+    assert "top level" in SettingsManager.get_last_load_error().message
 
 def test_save_and_load_profile_file(tmp_path):
     profile_file = tmp_path / "profiles" / "stream.json"

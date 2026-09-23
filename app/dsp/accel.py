@@ -314,3 +314,97 @@ def apply_tilt(magnitude_db, freqs, tilt_db, pivot_hz=1000.0):
         _TILT_CACHE[cache_key] = tilt_curve
 
     return magnitude_db + tilt_curve
+
+
+# ── Oscilloscope Trace ──────────────────────────────────────────────────────
+
+def _prepare_oscilloscope_trace_py(data: np.ndarray, display_samples: int, num_points: int,
+                                   gain_mode: int, manual_gain: float, prev_gain: float):
+    n = len(data)
+    disp = max(2, min(int(display_samples), n))
+    num_pts = max(2, int(num_points))
+    search_limit = max(0, n - disp)
+    trig = float(search_limit)
+
+    if search_limit > 1:
+        subset = data[:search_limit]
+        crossings = np.where((subset[:-1] <= 0) & (subset[1:] > 0))[0]
+        if len(crossings) > 0:
+            idx = crossings[-1]
+            y0, y1 = float(subset[idx]), float(subset[idx + 1])
+            diff = y1 - y0
+            frac = -y0 / diff if abs(diff) > 1e-6 else 0.0
+            trig = idx + frac
+
+    t_indices = np.linspace(trig, trig + disp - 1, num_pts, endpoint=True)
+    sample_indices = np.arange(n, dtype=np.float32)
+    downsampled = np.interp(t_indices, sample_indices, data).astype(np.float32)
+
+    if gain_mode == 2:
+        target = max(0.05, float(manual_gain))
+    else:
+        peak = float(np.max(np.abs(downsampled))) if len(downsampled) > 0 else 0.0
+        target = 1.0 if peak < 0.0005 else max(0.25, min(32.0, 0.86 / peak))
+
+    if gain_mode == 2:
+        gain = target
+    else:
+        alpha = 0.45 if target < prev_gain else 0.16
+        gain = prev_gain + (target - prev_gain) * alpha
+
+    vals = np.clip(downsampled * gain, -1.0, 1.0)
+    return vals, float(gain)
+
+
+def prepare_oscilloscope_trace(data: np.ndarray, display_samples: int, num_points: int,
+                               gain_mode: int, manual_gain: float, prev_gain: float):
+    """
+    Prepare downsampled oscilloscope trace values and gain.
+    gain_mode: 0 = Auto Fit, 1 = Auto Shared, 2 = Fixed
+    """
+    if _HAS_NATIVE and hasattr(_native, "prepare_oscilloscope_trace"):
+        f32_data = np.ascontiguousarray(data, dtype=np.float32)
+        return _native.prepare_oscilloscope_trace(
+            f32_data, int(display_samples), int(num_points),
+            int(gain_mode), float(manual_gain), float(prev_gain)
+        )
+    return _prepare_oscilloscope_trace_py(data, display_samples, num_points, gain_mode, manual_gain, prev_gain)
+
+
+# ── True Peak ───────────────────────────────────────────────────────────────
+
+def _calculate_true_peak_py(data: np.ndarray) -> np.ndarray:
+    was_1d = (data.ndim == 1)
+    if was_1d:
+        data = data[:, np.newaxis]
+
+    if len(data) < 16:
+        result = np.full(data.shape[1], -120.0, dtype=np.float64)
+        return float(result[0]) if was_1d else result
+
+    try:
+        from scipy.signal import resample_poly
+        up = resample_poly(data, 4, 1, axis=0)
+        peaks = np.max(np.abs(up), axis=0)
+        result = 20.0 * np.log10(np.clip(peaks, 1e-6, None))
+    except Exception:
+        peaks = np.max(np.abs(data), axis=0)
+        result = 20.0 * np.log10(np.clip(peaks, 1e-6, None))
+
+    return float(result[0]) if was_1d else result
+
+
+def calculate_true_peak(data: np.ndarray) -> np.ndarray:
+    """Calculate true peak per channel in dBTP."""
+    was_1d = (data.ndim == 1)
+    if was_1d:
+        data = data[:, np.newaxis]
+
+    if _HAS_NATIVE and hasattr(_native, "calculate_true_peak"):
+        f64_data = np.ascontiguousarray(data, dtype=np.float64)
+        result = _native.calculate_true_peak(f64_data)
+        return float(result[0]) if was_1d else result
+
+    return _calculate_true_peak_py(data)
+
+

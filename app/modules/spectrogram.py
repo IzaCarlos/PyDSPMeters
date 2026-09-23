@@ -315,32 +315,30 @@ class SpectrogramModule(BaseModule):
             
             self._last_rendered_idx = self._col_idx
         
-        # Draw ordered spectrogram image
-        self._ensure_render_images()
+        # Draw spectrogram image
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
 
         if self._orientation == "Horizontal":
-            painter.drawImage(QRect(0, 0, w, h), self._ordered_img)
+            head = self._col_idx % self._history_len
+            if head == 0:
+                painter.drawImage(QRect(0, 0, w, h), self._buffer_img)
+            else:
+                total_cols = self._history_len
+                len_1 = total_cols - head
+                w_1 = int(w * (len_1 / total_cols))
+                painter.drawImage(
+                    QRect(0, 0, w_1, h),
+                    self._buffer_img,
+                    QRect(head, 0, len_1, self._display_h),
+                )
+                painter.drawImage(
+                    QRect(w_1, 0, w - w_1, h),
+                    self._buffer_img,
+                    QRect(0, 0, head, self._display_h),
+                )
         else:
+            self._ensure_render_images()
             painter.drawImage(QRect(0, 0, w, h), self._vertical_img)
-        if False:
-            # Vertical mode: manually blit rotated by drawing column strips
-            # More efficient than QTransform().rotate(90) per frame
-            total_cols = self._history_len
-            h_1 = int(h * (len_1 / total_cols))
-            
-            # In vertical mode: time goes top-to-bottom, frequency goes left-to-right
-            # Source rows → dest columns, source columns → dest rows
-            painter.drawImage(
-                QRect(0, 0, w, h_1),
-                self._buffer_img,
-                QRect(head, 0, len_1, self._display_h)
-            )
-            painter.drawImage(
-                QRect(0, h_1, w, h - h_1),
-                self._buffer_img,
-                QRect(0, 0, head, self._display_h)
-            )
 
         # Frequency overlay lines
         if self._show_freq:

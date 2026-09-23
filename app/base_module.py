@@ -19,6 +19,12 @@ from app.utils import dsp_executor
 from app.utils import perf_stats
 
 
+MODULE_MIN_WIDTH = 48
+MODULE_MIN_CANVAS_HEIGHT = 32
+MODULE_MIN_HEIGHT = MODULE_MIN_CANVAS_HEIGHT
+MODULE_MIN_HEIGHT_WITH_HEADER = MODULE_MIN_CANVAS_HEIGHT + 26
+
+
 class ModuleHeader(QFrame):
     """Compact header bar with title and close button."""
 
@@ -77,7 +83,7 @@ class RenderCanvas(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(30)
+        self.setMinimumSize(MODULE_MIN_WIDTH, MODULE_MIN_CANVAS_HEIGHT)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setAttribute(Qt.WA_OpaquePaintEvent)
         self._render_func = None
@@ -211,6 +217,8 @@ class BaseModule(QWidget):
         self._title = title
         self.setObjectName("baseModule")
         self._move_mode = False
+        self.setMinimumSize(MODULE_MIN_WIDTH, MODULE_MIN_HEIGHT)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -392,7 +400,16 @@ class BaseModule(QWidget):
         remove_action = menu.addAction("✕ Remove Module")
         remove_action.triggered.connect(lambda: self.close_requested.emit(self))
         
-        menu.exec(event.globalPos())
+        host = self.window()
+        hold = getattr(host, "hold_ghost_ui", None)
+        release = getattr(host, "release_ghost_ui", None)
+        if callable(hold):
+            hold()
+        try:
+            menu.exec(event.globalPos())
+        finally:
+            if callable(release):
+                release()
 
     def on_audio_data(self, data: np.ndarray):
         """

@@ -9,9 +9,9 @@ import logging
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QMenu, QComboBox, QPushButton, QLabel, QFrame, QApplication,
-    QSizePolicy, QWidgetAction,
+    QSizePolicy, QWidgetAction, QGraphicsOpacityEffect,
 )
-from PySide6.QtCore import Qt, QPoint, QRect, QSize, Signal, QTimer
+from PySide6.QtCore import Qt, QPoint, QRect, QSize, Signal, QTimer, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QAction, QColor, QCursor, QIcon, QActionGroup
 
 from app.theme import (
@@ -19,7 +19,7 @@ from app.theme import (
     apply_theme, current_theme_name,
 )
 from app.audio_engine import AudioEngine
-from app.base_module import BaseModule
+from app.base_module import BaseModule, MODULE_MIN_HEIGHT, MODULE_MIN_WIDTH
 from app.modules import MODULE_REGISTRY
 from app.settings import SettingsManager
 from app.utils import perf_stats
@@ -315,6 +315,7 @@ class MainWindow(QMainWindow):
         self.audio_engine = audio_engine
         self._splash = splash
         self._settings = SettingsManager.load()
+        self._theme_load_warning = None
         self.setWindowTitle(SettingsManager.get_window_title())
 
         self.setWindowFlags(
@@ -376,6 +377,7 @@ class MainWindow(QMainWindow):
         self.splitter.setVisible(False)
         self.splitter.setHandleWidth(4)
         self.splitter.setChildrenCollapsible(False)
+        self.splitter.splitterMoved.connect(lambda *_: QTimer.singleShot(0, self._sanitize_splitter_sizes))
         main_layout.addWidget(self.splitter)
         
         self._layout_vertical = True
@@ -412,6 +414,9 @@ class MainWindow(QMainWindow):
         ui_s = self._settings.get("ui", {})
         Fonts.TEXT_SCALE = ui_s.get("text_scale", 1.0)
         initial_theme = ui_s.get("theme", "Midnight")
+        if initial_theme not in THEME_PRESETS:
+            self._theme_load_warning = f"The saved theme '{initial_theme}' is not available. Falling back to Midnight."
+            initial_theme = "Midnight"
         apply_theme(initial_theme, ui_s.get("color_overrides", {}))
         app = QApplication.instance()
         if app:
@@ -440,6 +445,11 @@ class MainWindow(QMainWindow):
         self._ghost_hover_ready = False
         self._ghost_ui_floating = None
         self._ghost_ui_visible = None
+        self._ghost_hover_inside = False
+        self._ghost_update_pending = False
+        self._ghost_menu_depth = 0
+        self._ghost_fade_anims = {}
+        self._ghost_fade_duration_ms = 100
         self._update_ghost_mode()
         
         # Divider settings (must be after apply_theme to use correct BORDER color)
@@ -478,6 +488,7 @@ class MainWindow(QMainWindow):
             
         # Start audio stream (with slight delay to avoid startup clicks)
         QTimer.singleShot(500, self._start_audio_stream)
+        QTimer.singleShot(800, self._show_config_load_warnings)
 
     def finish_loading(self):
         """Finalize UI layout and restore persistent state."""
@@ -485,14 +496,15 @@ class MainWindow(QMainWindow):
         self.splitter.setVisible(True)
         
         saved_sizes = self._settings.get("splitter_sizes", [])
+        self._apply_module_size_constraints()
         if saved_sizes and len(saved_sizes) == self.splitter.count():
-            self.splitter.setSizes(saved_sizes)
+            self._sanitize_splitter_sizes(saved_sizes)
         else:
             # Fair distribution if no saved sizes or mismatch
             total = self.splitter.width() if not self._layout_vertical else self.splitter.height()
             count = self.splitter.count()
             if count > 0:
-                self.splitter.setSizes([total // count] * count)
+                self._sanitize_splitter_sizes([total // count] * count)
         
         if hasattr(self, "_loading_overlay") and self._loading_overlay:
             self._loading_overlay.fade_out()
@@ -707,7 +719,11 @@ class MainWindow(QMainWindow):
         import_act = profile_menu.addAction("Load Profile from JSON...")
         import_act.triggered.connect(self._import_profile)
         
-        menu.exec(QCursor.pos())
+        self.hold_ghost_ui()
+        try:
+            menu.exec(QCursor.pos())
+        finally:
+            self.release_ghost_ui()
 
     def _export_profile(self):
         from PySide6.QtWidgets import QFileDialog, QMessageBox
@@ -740,7 +756,11 @@ class MainWindow(QMainWindow):
 
         settings = SettingsManager.load_from_file(path)
         if not isinstance(settings, dict) or not settings:
-            QMessageBox.warning(self, "Profile Load Failed", "That file does not look like a PyDSPMeters settings profile.")
+            load_error = SettingsManager.get_last_load_error()
+            message = "That file does not look like a PyDSPMeters settings profile."
+            if load_error:
+                message = f"Could not load profile:\n{load_error.message}"
+            QMessageBox.warning(self, "Profile Load Failed", message)
             return
 
         try:
@@ -779,7 +799,11 @@ class MainWindow(QMainWindow):
         self.title_bar.layout_btn.setText("â–¥" if self._layout_vertical else "â–¤")
 
         Fonts.TEXT_SCALE = ui_s.get("text_scale", 1.0)
-        apply_theme(ui_s.get("theme", "Midnight"), ui_s.get("color_overrides", {}))
+        theme_name = ui_s.get("theme", "Midnight")
+        if theme_name not in THEME_PRESETS:
+            self._theme_load_warning = f"The profile theme '{theme_name}' is not available. Falling back to Midnight."
+            theme_name = "Midnight"
+        apply_theme(theme_name, ui_s.get("color_overrides", {}))
         app = QApplication.instance()
         if app:
             app.setStyleSheet(build_stylesheet())
@@ -825,11 +849,12 @@ class MainWindow(QMainWindow):
         self._set_divider_opacity(win_s.get("divider_opacity", 100))
 
         saved_sizes = settings.get("splitter_sizes", [])
+        self._apply_module_size_constraints()
         if saved_sizes and len(saved_sizes) == self.splitter.count():
-            self.splitter.setSizes(saved_sizes)
+            self._sanitize_splitter_sizes(saved_sizes)
         elif self.splitter.count() > 0:
             total = self.splitter.height() if self._layout_vertical else self.splitter.width()
-            self.splitter.setSizes([max(1, total // self.splitter.count())] * self.splitter.count())
+            self._sanitize_splitter_sizes([total // self.splitter.count()] * self.splitter.count())
 
         self._update_ui_styles()
         self._update_ghost_mode()
@@ -988,6 +1013,7 @@ class MainWindow(QMainWindow):
 
     def _update_ghost_mode(self):
         started = time.perf_counter()
+        self._ghost_update_pending = False
         # Ghost mode active if manually toggled OR if it's a 'Ghost/Glass/Transparent' theme
         theme = current_theme_name()
         is_transparent = "Transparent" in theme or "Glass" in theme
@@ -1010,21 +1036,79 @@ class MainWindow(QMainWindow):
                     main_layout.insertWidget(0, self.title_bar)
                     self._ghost_ui_floating = False
                     
-        show = not ghost_active or (self._ghost_hover_ready and self.underMouse())
+        show = not ghost_active or self._ghost_menu_depth > 0 or (self._ghost_hover_ready and self._ghost_hover_inside)
         if self._ghost_ui_visible is not show:
-            self.title_bar.setVisible(show)
-            self._grip.setVisible(show)
+            self._fade_ghost_widget(self.title_bar, "title_bar", show)
+            self._fade_ghost_widget(self._grip, "resize_grip", show)
             self._ghost_ui_visible = show
         perf_stats.record_timing("window.ghost_mode_update", time.perf_counter() - started)
 
+    def _fade_ghost_widget(self, widget, key, visible):
+        if widget is None:
+            return
+
+        anim = self._ghost_fade_anims.pop(key, None)
+        if anim is not None:
+            anim.stop()
+
+        was_visible = widget.isVisible()
+        effect = widget.graphicsEffect()
+        if not isinstance(effect, QGraphicsOpacityEffect):
+            effect = QGraphicsOpacityEffect(widget)
+            widget.setGraphicsEffect(effect)
+            effect.setOpacity(1.0 if was_visible else 0.0)
+
+        if visible:
+            widget.setVisible(True)
+
+        start = effect.opacity() if was_visible else 0.0
+        end = 1.0 if visible else 0.0
+        if abs(start - end) < 0.01:
+            effect.setOpacity(end)
+            widget.setVisible(visible)
+            return
+
+        fade = QPropertyAnimation(effect, b"opacity", self)
+        fade.setDuration(self._ghost_fade_duration_ms)
+        fade.setStartValue(start)
+        fade.setEndValue(end)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+
+        def finish():
+            if not visible:
+                widget.setVisible(False)
+            effect.setOpacity(end)
+            self._ghost_fade_anims.pop(key, None)
+
+        fade.finished.connect(finish)
+        self._ghost_fade_anims[key] = fade
+        fade.start()
+
+    def hold_ghost_ui(self):
+        self._ghost_menu_depth += 1
+        self._schedule_ghost_mode_update()
+
+    def release_ghost_ui(self):
+        self._ghost_menu_depth = max(0, self._ghost_menu_depth - 1)
+        self._ghost_hover_inside = self.rect().contains(self.mapFromGlobal(QCursor.pos()))
+        self._schedule_ghost_mode_update()
+
+    def _schedule_ghost_mode_update(self):
+        if self._ghost_update_pending:
+            return
+        self._ghost_update_pending = True
+        QTimer.singleShot(16, self._update_ghost_mode)
+
     def enterEvent(self, event):
         if self._ghost_hover_ready:
-            self._update_ghost_mode()
+            self._ghost_hover_inside = True
+            self._schedule_ghost_mode_update()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         if self._ghost_hover_ready:
-            self._update_ghost_mode()
+            self._ghost_hover_inside = self.rect().contains(self.mapFromGlobal(QCursor.pos()))
+            self._schedule_ghost_mode_update()
         super().leaveEvent(event)
 
     # ── App Bar ──────────────────────────────────────────────────────────────
@@ -1147,11 +1231,19 @@ class MainWindow(QMainWindow):
     def _appbar_health_ok(self):
         if not getattr(self, "_appbar_active", False):
             return True
+        if not self.isVisible():
+            return False
         if not self._appbar_geometry_matches():
             return False
         import sys
         if sys.platform == "win32":
-            return self._appbar_work_area_reserved()
+            try:
+                import ctypes
+                hwnd = int(self._appbar_registered_hwnd or int(self.winId()))
+                if hwnd and not ctypes.windll.user32.IsWindow(hwnd):
+                    return False
+            except Exception:
+                pass
         return True
 
     def _appbar_geometry_matches(self):
@@ -1164,40 +1256,6 @@ class MainWindow(QMainWindow):
             and abs(current.width() - rect.width()) <= tolerance
             and abs(current.height() - rect.height()) <= tolerance
         )
-
-    def _appbar_work_area_reserved(self):
-        rect = self._appbar_last_rect
-        if rect is None:
-            return False
-        work = self._win32_work_area()
-        if work is None:
-            return True
-        tolerance = 3
-        edge = getattr(self, "_appbar_edge", "right")
-        if edge == "left":
-            return work.left() >= rect.right() - tolerance
-        if edge == "right":
-            return work.right() <= rect.left() + tolerance
-        if edge == "top":
-            return work.top() >= rect.bottom() - tolerance
-        return work.bottom() <= rect.top() + tolerance
-
-    def _win32_work_area(self):
-        import sys
-        if sys.platform != "win32":
-            return None
-        try:
-            import ctypes
-            import ctypes.wintypes as wt
-
-            SPI_GETWORKAREA = 0x0030
-            rc = wt.RECT()
-            ok = ctypes.windll.user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(rc), 0)
-            if not ok:
-                return None
-            return QRect(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top)
-        except Exception:
-            return None
 
     def _schedule_appbar_deep_repair(self, delay=250):
         if not getattr(self, "_appbar_active", False):
@@ -1261,7 +1319,7 @@ class MainWindow(QMainWindow):
         """Dock the window to the chosen screen edge."""
         import sys
         
-        screen = QApplication.primaryScreen()
+        screen = self.screen() or QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
         if not screen: return
         sg = screen.geometry()
         thickness = self.width() if self._appbar_edge in ("left", "right") else self.height()
@@ -1459,13 +1517,66 @@ class MainWindow(QMainWindow):
 
     # ── Module Management ───────────────────────────────────────────────────
 
+    def _module_minimum_extent(self):
+        return MODULE_MIN_HEIGHT if self.splitter.orientation() == Qt.Vertical else MODULE_MIN_WIDTH
+
+    def _apply_module_size_constraints(self):
+        count = self.splitter.count()
+        if count <= 0:
+            self.setMinimumSize(40, 40)
+            return
+
+        for i in range(count):
+            widget = self.splitter.widget(i)
+            if widget is None:
+                continue
+            widget.setMinimumSize(MODULE_MIN_WIDTH, MODULE_MIN_HEIGHT)
+            self.splitter.setCollapsible(i, False)
+
+        handle_total = max(0, count - 1) * max(0, self.splitter.handleWidth())
+        if self.splitter.orientation() == Qt.Vertical:
+            title_h = 28 if self.title_bar.parentWidget() == self.centralWidget() and self.title_bar.isVisible() else 0
+            self.setMinimumSize(MODULE_MIN_WIDTH, title_h + count * MODULE_MIN_HEIGHT + handle_total)
+        else:
+            self.setMinimumSize(count * MODULE_MIN_WIDTH + handle_total, max(40, MODULE_MIN_HEIGHT))
+
+    def _sanitize_splitter_sizes(self, sizes=None):
+        count = self.splitter.count()
+        if count <= 0:
+            return
+
+        sizes = list(self.splitter.sizes() if sizes is None else sizes)
+        if len(sizes) != count:
+            total = self.splitter.height() if self.splitter.orientation() == Qt.Vertical else self.splitter.width()
+            sizes = [max(self._module_minimum_extent(), total // count)] * count
+
+        min_extent = self._module_minimum_extent()
+        total = max(sum(sizes), min_extent * count)
+        sizes = [max(min_extent, int(s)) for s in sizes]
+        overflow = sum(sizes) - total
+
+        if overflow > 0:
+            for i in sorted(range(count), key=lambda idx: sizes[idx], reverse=True):
+                room = sizes[i] - min_extent
+                take = min(room, overflow)
+                sizes[i] -= take
+                overflow -= take
+                if overflow <= 0:
+                    break
+
+        self.splitter.setSizes(sizes)
+
     def _show_add_menu(self):
         menu = QMenu(self)
         for key, info in MODULE_REGISTRY.items():
             action = QAction(info["display_name"], self)
             action.triggered.connect(lambda checked, k=key: self.add_module(k))
             menu.addAction(action)
-        menu.exec(QCursor.pos())
+        self.hold_ghost_ui()
+        try:
+            menu.exec(QCursor.pos())
+        finally:
+            self.release_ghost_ui()
 
     def add_module(self, module_key: str, config: dict = None):
         if module_key not in MODULE_REGISTRY:
@@ -1489,6 +1600,7 @@ class MainWindow(QMainWindow):
         
         self.splitter.addWidget(module)
         self._modules.append(module)
+        self._apply_module_size_constraints()
         
         # Ensure new module is visible
         if self._loading_settings:
@@ -1509,11 +1621,11 @@ class MainWindow(QMainWindow):
                     # Adjust for rounding errors
                     diff = total - sum(new_sizes)
                     new_sizes[0] += diff
-                    self.splitter.setSizes(new_sizes)
+                    self._sanitize_splitter_sizes(new_sizes)
                 else:
-                    self.splitter.setSizes([total // len(sizes)] * len(sizes))
+                    self._sanitize_splitter_sizes([total // len(sizes)] * len(sizes))
             else:
-                self.splitter.setSizes([100] * len(sizes))
+                self._sanitize_splitter_sizes([100] * len(sizes))
 
     def remove_module(self, module: BaseModule):
         if module in self._modules:
@@ -1521,6 +1633,8 @@ class MainWindow(QMainWindow):
             module.cleanup()
             module.setParent(None)
             module.deleteLater()
+            self._apply_module_size_constraints()
+            self._sanitize_splitter_sizes()
 
     def _move_module(self, module, direction):
         idx = self.splitter.indexOf(module)
@@ -1532,6 +1646,8 @@ class MainWindow(QMainWindow):
             if module in self._modules:
                 self._modules.pop(self._modules.index(module))
                 self._modules.insert(new_idx, module)
+            self._apply_module_size_constraints()
+            self._sanitize_splitter_sizes()
 
     def _toggle_layout(self):
         if getattr(self, "_appbar_active", False):
@@ -1546,6 +1662,8 @@ class MainWindow(QMainWindow):
             self.splitter.setOrientation(Qt.Horizontal)
             self.title_bar.layout_btn.setText("▤")
             self.title_bar.layout_btn.setToolTip("Switch to Vertical layout")
+        self._apply_module_size_constraints()
+        self._sanitize_splitter_sizes()
             
     def _update_layout_tooltip(self):
         if self._layout_vertical:
@@ -1651,7 +1769,32 @@ class MainWindow(QMainWindow):
         if not getattr(self, "_is_ready", False):
             return
         self._ghost_hover_ready = True
-        self._update_ghost_mode()
+        self._ghost_hover_inside = self.rect().contains(self.mapFromGlobal(QCursor.pos()))
+        self._schedule_ghost_mode_update()
+
+    def _show_config_load_warnings(self):
+        from PySide6.QtWidgets import QMessageBox
+        from app import theme as theme_module
+
+        messages = []
+        settings_error = SettingsManager.get_last_load_error()
+        if settings_error:
+            messages.append(f"Settings file was ignored:\n{settings_error.path}\n{settings_error.message}")
+        if getattr(theme_module, "CUSTOM_THEME_LOAD_ERROR", None):
+            messages.append(f"Custom themes were ignored:\n{theme_module.CUSTOM_THEME_LOAD_ERROR}")
+        if self._theme_load_warning:
+            messages.append(self._theme_load_warning)
+
+        if not messages:
+            return
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Configuration Warning")
+        box.setText("\n\n".join(messages))
+        box.setIcon(QMessageBox.Warning)
+        box.setStyleSheet(f"QMessageBox {{ background-color: {Colors.BG_DARK}; color: {Colors.TEXT}; }} QPushButton {{ background: {Colors.BG_HEADER}; color: {Colors.ACCENT}; border: 1px solid {Colors.BORDER}; padding: 4px 12px; }}")
+        self._config_warning_box = box
+        box.show()
 
     def contextMenuEvent(self, event):
         self._show_gear_menu()

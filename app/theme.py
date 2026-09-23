@@ -5,6 +5,7 @@ Supports multiple switchable theme presets and Qt stylesheet generation.
 
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtCore import Qt
+import re
 
 
 # ── Theme Presets ────────────────────────────────────────────────────────────
@@ -435,12 +436,52 @@ THEME_GROUPS = {
 }
 
 INVALID_THEMES = {}
+CUSTOM_THEME_LOAD_ERROR = None
+
+
+_HEX_COLOR_RE = re.compile(r"^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$")
+_EXTRA_THEME_KEYS = {
+    "GREEN", "YELLOW", "RED", "GRID", "GRID_BRIGHT",
+    "VU_CREAM", "VU_DARK_FACE", "VU_NEEDLE", "VU_RED_ZONE",
+}
+_KNOWN_THEME_KEYS = set(_EXTRA_THEME_KEYS)
+for _preset in THEME_PRESETS.values():
+    _KNOWN_THEME_KEYS.update(_preset.keys())
+
+
+def _valid_hex_color(value):
+    return isinstance(value, str) and bool(_HEX_COLOR_RE.match(value))
+
+
+def _validate_heatmap_stops(value):
+    if not isinstance(value, list) or not value:
+        return "must be a non-empty list of [position, color] pairs"
+
+    last_pos = -1.0
+    for index, stop in enumerate(value):
+        if not isinstance(stop, (list, tuple)) or len(stop) != 2:
+            return f"stop {index + 1} must be [position, color]"
+        pos, color = stop
+        if not isinstance(pos, (int, float)) or not 0.0 <= float(pos) <= 1.0:
+            return f"stop {index + 1} position must be a number from 0.0 to 1.0"
+        if float(pos) < last_pos:
+            return f"stop {index + 1} position must not go backwards"
+        if not _valid_hex_color(color):
+            return f"stop {index + 1} color must be a hex color like #00d4ff"
+        last_pos = float(pos)
+    return None
 
 def load_custom_themes():
     import json
     import os
     import logging
     from app.settings import SettingsManager
+
+    global CUSTOM_THEME_LOAD_ERROR
+    CUSTOM_THEME_LOAD_ERROR = None
+    INVALID_THEMES.clear()
+    if "Custom" in THEME_GROUPS:
+        THEME_GROUPS["Custom"].clear()
 
     path = os.path.join(SettingsManager.get_app_data_dir(), "themes.json")
     template = {
@@ -453,29 +494,38 @@ def load_custom_themes():
     
     if not os.path.exists(path):
         try:
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(template, f, indent=4)
         except Exception as e:
-            logging.error(f"Failed to create themes.json: {e}")
+            CUSTOM_THEME_LOAD_ERROR = f"Could not create themes.json: {e}"
+            logging.error(CUSTOM_THEME_LOAD_ERROR)
         return
 
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             custom_themes = json.load(f)
+    except json.JSONDecodeError as e:
+        CUSTOM_THEME_LOAD_ERROR = f"themes.json has malformed JSON at line {e.lineno}, column {e.colno}: {e.msg}"
+        logging.error(CUSTOM_THEME_LOAD_ERROR)
+        return
     except Exception as e:
-        logging.error(f"Failed to parse themes.json: {e}")
+        CUSTOM_THEME_LOAD_ERROR = f"Could not read themes.json: {e}"
+        logging.error(CUSTOM_THEME_LOAD_ERROR)
         return
         
     if not isinstance(custom_themes, dict):
-        logging.error("themes.json must contain a dictionary of themes.")
+        CUSTOM_THEME_LOAD_ERROR = "themes.json must contain a JSON object of theme names."
+        logging.error(CUSTOM_THEME_LOAD_ERROR)
         return
         
-    if "Custom" not in THEME_GROUPS:
-        THEME_GROUPS["Custom"] = []
-    else:
-        THEME_GROUPS["Custom"].clear()
+    THEME_GROUPS["Custom"] = []
         
     for name, theme_data in custom_themes.items():
+        if not isinstance(name, str) or not name.strip():
+            INVALID_THEMES[str(name)] = "Theme names must be non-empty strings."
+            THEME_GROUPS["Custom"].append(f"{name} [!]")
+            continue
+
         if name == "My Custom Theme" and "__comment" in theme_data:
             continue
             
@@ -484,27 +534,29 @@ def load_custom_themes():
             THEME_GROUPS["Custom"].append(f"{name} [!]")
             continue
             
-        invalid_keys = []
+        errors = []
         for k, v in theme_data.items():
             if k == "__comment": continue
+            if k not in _KNOWN_THEME_KEYS:
+                errors.append(f"{k}: unknown color key")
+                continue
             
             if k == "HEATMAP_STOPS":
-                # In JSON this is a list of lists: [[0.0, "#hex"], ...]
-                if not isinstance(v, list):
-                    invalid_keys.append(k)
+                error = _validate_heatmap_stops(v)
+                if error:
+                    errors.append(f"{k}: {error}")
                 continue
                 
             if k.endswith("_ALPHA"):
-                if not isinstance(v, (int, float)):
-                    invalid_keys.append(k)
+                if not isinstance(v, (int, float)) or not 0 <= v <= 255:
+                    errors.append(f"{k}: must be a number from 0 to 255")
                 continue
 
-            # Standard hex color check
-            if not isinstance(v, str) or not v.startswith("#"):
-                invalid_keys.append(k)
+            if not _valid_hex_color(v):
+                errors.append(f"{k}: must be a hex color like #00d4ff")
                 
-        if invalid_keys:
-            INVALID_THEMES[name] = f"Invalid color formats or missing '#' for keys: {', '.join(invalid_keys)}"
+        if errors:
+            INVALID_THEMES[name] = "; ".join(errors)
             THEME_GROUPS["Custom"].append(f"{name} [!]")
         else:
             THEME_PRESETS[name] = theme_data

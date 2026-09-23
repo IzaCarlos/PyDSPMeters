@@ -12,6 +12,19 @@ from app.modules import register_module
 from app.theme import Colors, Fonts
 
 
+VU_STYLE_NAMES = [
+    "Modern",
+    "Classic Dark",
+    "LED Bar",
+    "Compaq Modern",
+    "Compaq Vintage",
+    "Tape Deck",
+    "Neon Arc",
+    "Broadcast Twin",
+]
+VU_CHANNELS = ["L+R", "Left", "Right", "Mid", "Side"]
+
+
 @register_module("vu_meter", "VU Meter")
 class VUMeterModule(BaseModule):
 
@@ -51,18 +64,55 @@ class VUMeterModule(BaseModule):
         }
 
     def apply_settings(self, settings):
-        self._channel = settings.get("channel", self._channel)
-        self._cal_offset = float(settings.get("cal_offset", self._cal_offset))
-        self._style = int(settings.get("style", self._style))
-        self._show_peak = settings.get("show_peak", self._show_peak)
-        self._show_clip = settings.get("show_clip", self._show_clip)
+        if not isinstance(settings, dict):
+            return
+        channel = settings.get("channel", self._channel)
+        self._channel = channel if channel in VU_CHANNELS else self._channel
+        self._cal_offset = self._coerce_float(settings.get("cal_offset"), self._cal_offset, -60.0, 60.0)
+        self._style = self._coerce_style(settings.get("style"), self._style)
+        self._show_peak = self._coerce_bool(settings.get("show_peak"), self._show_peak)
+        self._show_clip = self._coerce_bool(settings.get("show_clip"), self._show_clip)
+
+    @staticmethod
+    def _coerce_bool(value, fallback):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in ("true", "1", "yes", "on"):
+                return True
+            if text in ("false", "0", "no", "off"):
+                return False
+        return fallback
+
+    @staticmethod
+    def _coerce_float(value, fallback, minimum=None, maximum=None):
+        try:
+            result = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        if not math.isfinite(result):
+            return fallback
+        if minimum is not None:
+            result = max(minimum, result)
+        if maximum is not None:
+            result = min(maximum, result)
+        return result
+
+    @staticmethod
+    def _coerce_style(value, fallback):
+        try:
+            style = int(value)
+        except (TypeError, ValueError):
+            return fallback
+        return style if 0 <= style < len(VU_STYLE_NAMES) else fallback
 
     def build_context_menu(self, menu):
         from PySide6.QtGui import QActionGroup
         
         sm = menu.addMenu("Style")
         sg = QActionGroup(self)
-        for i, s in enumerate(["Modern", "Classic Dark", "LED Bar", "Compaq Modern", "Compaq Vintage"]):
+        for i, s in enumerate(VU_STYLE_NAMES):
             a = sm.addAction(s)
             a.setCheckable(True)
             a.setChecked(i == self._style)
@@ -71,8 +121,7 @@ class VUMeterModule(BaseModule):
             
         cm = menu.addMenu("Channel")
         cg = QActionGroup(self)
-        channels = ["L+R", "Left", "Right", "Mid", "Side"]
-        for c in channels:
+        for c in VU_CHANNELS:
             a = cm.addAction(c)
             a.setCheckable(True)
             a.setChecked(c == self._channel)
@@ -157,6 +206,15 @@ class VUMeterModule(BaseModule):
             return
         if self._style in (3, 4):
             self._render_compaq(painter, w, h, vintage=self._style == 4)
+            return
+        if self._style == 5:
+            self._render_tape_deck(painter, w, h)
+            return
+        if self._style == 6:
+            self._render_neon_arc(painter, w, h)
+            return
+        if self._style == 7:
+            self._render_broadcast_twin(painter, w, h)
             return
             
         style = self._style
@@ -319,16 +377,251 @@ class VUMeterModule(BaseModule):
                 painter.setFont(self.get_responsive_font(Fonts.small, 40, 12, "CLIP"))
                 painter.drawText(QRectF(w - 58, 6, 40, 12), Qt.AlignRight, "CLIP")
 
+    def _draw_corner_status(self, painter, w, h):
+        painter.setFont(Fonts.small())
+        if self._show_peak:
+            lit = self._peak_lit_l or self._peak_lit_r
+            painter.setBrush(QBrush(QColor(Colors.PEAK_LED) if lit else QColor(Colors.BG_INPUT)))
+            painter.setPen(QPen(QColor(Colors.BORDER), 1))
+            painter.drawEllipse(QPointF(12, 12), 4, 4)
+            if w > 85:
+                painter.setPen(QColor(Colors.TEXT_DIM))
+                painter.setFont(self.get_responsive_font(Fonts.small, 40, 12, "PEAK"))
+                painter.drawText(QRectF(18, 6, 40, 12), Qt.AlignLeft, "PEAK")
+
+        if self._show_clip:
+            lit = self._clip_lit_l or self._clip_lit_r
+            painter.setBrush(QBrush(QColor(Colors.CLIP_LED) if lit else QColor(Colors.BG_INPUT)))
+            painter.setPen(QPen(QColor(Colors.BORDER), 1))
+            painter.drawEllipse(QPointF(w - 12, 12), 4, 4)
+            if w > 85:
+                painter.setPen(QColor(Colors.TEXT_DIM))
+                painter.setFont(self.get_responsive_font(Fonts.small, 40, 12, "CLIP"))
+                painter.drawText(QRectF(w - 58, 6, 40, 12), Qt.AlignRight, "CLIP")
+
+    @staticmethod
+    def _level_fraction(level, db_min=-40.0, db_max=3.0):
+        return max(0.0, min(1.0, (float(level) - db_min) / (db_max - db_min)))
+
+    def _render_tape_deck(self, painter, w, h):
+        if w < 50 or h < 40:
+            return
+
+        is_stereo = self._channel == "L+R"
+        gap = max(4.0, min(10.0, min(w, h) * 0.045))
+        if is_stereo:
+            if w >= h * 1.45:
+                meter_w = (w - gap) * 0.5
+                rects = [QRectF(0, 0, meter_w, h), QRectF(meter_w + gap, 0, meter_w, h)]
+            else:
+                meter_h = (h - gap) * 0.5
+                rects = [QRectF(0, 0, w, meter_h), QRectF(0, meter_h + gap, w, meter_h)]
+            self._draw_tape_unit(painter, rects[0], self._needle_l, "L", QColor("#1c1a16"))
+            self._draw_tape_unit(painter, rects[1], self._needle_r, "R", QColor("#8f2b1f"))
+        else:
+            self._draw_tape_unit(painter, QRectF(0, 0, w, h), self._needle_l, self._channel, QColor("#1c1a16"))
+        self._draw_corner_status(painter, w, h)
+
+    def _draw_tape_unit(self, painter, rect, value, label, needle_col):
+        pad = max(4.0, min(10.0, min(rect.width(), rect.height()) * 0.07))
+        body = rect.adjusted(pad, pad, -pad, -pad)
+        if body.width() < 28 or body.height() < 24:
+            return
+
+        grad = QLinearGradient(body.topLeft(), body.bottomRight())
+        grad.setColorAt(0.0, QColor("#fff5d5"))
+        grad.setColorAt(0.58, QColor("#e2d29f"))
+        grad.setColorAt(1.0, QColor("#aa986c"))
+        painter.setPen(QPen(QColor("#5f543d"), 1))
+        painter.setBrush(QBrush(QColor("#2c281f")))
+        painter.drawRoundedRect(body.adjusted(-2, -2, 2, 2), 4, 4)
+        painter.setBrush(QBrush(grad))
+        painter.drawRoundedRect(body, 3, 3)
+
+        cx = body.center().x()
+        cy = body.bottom() - max(5.0, body.height() * 0.12)
+        radius = min(body.width() * 0.44, body.height() * 0.88)
+        angle_start, angle_end = 150.0, 30.0
+
+        def point(db, r):
+            frac = self._level_fraction(db, -20.0, 3.0)
+            angle = math.radians(angle_start - frac * (angle_start - angle_end))
+            return QPointF(cx + r * math.cos(angle), cy - r * math.sin(angle))
+
+        painter.setPen(QPen(QColor("#5a513c"), 1))
+        painter.drawArc(QRectF(cx - radius, cy - radius, radius * 2, radius * 2),
+                        int(angle_end * 16), int((angle_start - angle_end) * 16))
+
+        for db, text in [(-20, "-20"), (-10, "-10"), (-7, ""), (-5, "-5"), (-3, ""), (0, "0"), (3, "+3")]:
+            major = text != ""
+            col = QColor("#a92a20") if db >= 0 else QColor("#2d2a24")
+            painter.setPen(QPen(col, 1.5 if major else 0.8))
+            painter.drawLine(point(db, radius * (0.82 if major else 0.88)), point(db, radius * 0.98))
+            if text and radius > 46:
+                pos = point(db, radius * 0.66)
+                painter.setFont(self.get_responsive_font(Fonts.vu_scale, 24, 10, text))
+                painter.setPen(col)
+                painter.drawText(QRectF(pos.x() - 12, pos.y() - 5, 24, 10), Qt.AlignCenter, text)
+
+        end = point(value, radius * 0.96)
+        painter.setPen(QPen(needle_col, max(1.3, min(2.4, radius * 0.030))))
+        painter.drawLine(QPointF(cx, cy), end)
+        painter.setBrush(QBrush(QColor("#2a241a")))
+        painter.setPen(QPen(QColor("#f7edcf"), 1))
+        painter.drawEllipse(QPointF(cx, cy), max(3.0, radius * 0.055), max(3.0, radius * 0.055))
+
+        painter.setFont(self.get_responsive_font(Fonts.small, 58, 12, f"{label} VU"))
+        painter.setPen(QColor("#483f2b"))
+        painter.drawText(QRectF(body.left() + 5, body.bottom() - 15, 58, 12), Qt.AlignLeft | Qt.AlignVCenter, f"{label} VU")
+
+    def _render_neon_arc(self, painter, w, h):
+        if w < 50 or h < 38:
+            return
+
+        is_stereo = self._channel == "L+R"
+        cx = w * 0.5
+        cy = h - max(12.0, h * 0.14)
+        radius = min(w * 0.42, h * 0.72)
+        angle_start, angle_end = 155.0, 25.0
+
+        def draw_arc(level, radius_offset, color, width):
+            frac = max(0.0, min(1.0, (level + 40.0) / 43.0))
+            span = (angle_start - angle_end) * frac
+            rect = QRectF(cx - radius + radius_offset, cy - radius + radius_offset,
+                          (radius - radius_offset) * 2, (radius - radius_offset) * 2)
+            glow = QColor(color)
+            glow.setAlpha(55)
+            painter.setPen(QPen(glow, width + 5, Qt.SolidLine, Qt.RoundCap))
+            painter.drawArc(rect, int(angle_start * 16), int(-span * 16))
+            painter.setPen(QPen(QColor(color), width, Qt.SolidLine, Qt.RoundCap))
+            painter.drawArc(rect, int(angle_start * 16), int(-span * 16))
+
+        painter.setPen(QPen(QColor(Colors.GRID), 1))
+        for r_off in ([0, 9] if is_stereo else [0]):
+            rect = QRectF(cx - radius + r_off, cy - radius + r_off, (radius - r_off) * 2, (radius - r_off) * 2)
+            painter.drawArc(rect, int(angle_start * 16), int(-(angle_start - angle_end) * 16))
+
+        draw_arc(self._needle_l, 0, QColor(Colors.ACCENT), max(3, min(7, int(radius * 0.045))))
+        if is_stereo:
+            draw_arc(self._needle_r, 9, QColor(Colors.ACCENT_PINK), max(2, min(5, int(radius * 0.035))))
+
+        for db in [-40, -30, -20, -10, -3, 0, 3]:
+            frac = (db + 40.0) / 43.0
+            angle = math.radians(angle_start - frac * (angle_start - angle_end))
+            inner = radius * 0.87
+            outer = radius * 0.96
+            col = QColor(Colors.METER_HIGH) if db >= 0 else QColor(Colors.TEXT_DIM)
+            painter.setPen(QPen(col, 1))
+            painter.drawLine(QPointF(cx + inner * math.cos(angle), cy - inner * math.sin(angle)),
+                             QPointF(cx + outer * math.cos(angle), cy - outer * math.sin(angle)))
+
+        label = "L/R" if is_stereo else self._channel.upper()
+        painter.setFont(self.get_responsive_font(Fonts.value, 100, 18, label))
+        painter.setPen(QColor(Colors.TEXT))
+        painter.drawText(QRectF(cx - 50, cy - radius * 0.52, 100, 18), Qt.AlignCenter, label)
+        self._draw_corner_status(painter, w, h)
+
+    def _render_broadcast_twin(self, painter, w, h):
+        if w < 50 or h < 38:
+            return
+
+        if self._channel == "L+R":
+            gap = max(4.0, min(10.0, min(w, h) * 0.05))
+            if w >= h * 1.25:
+                meter_w = (w - gap) * 0.5
+                rects = [QRectF(0, 0, meter_w, h), QRectF(meter_w + gap, 0, meter_w, h)]
+            else:
+                meter_h = (h - gap) * 0.5
+                rects = [QRectF(0, 0, w, meter_h), QRectF(0, meter_h + gap, w, meter_h)]
+            self._draw_broadcast_face(painter, rects[0], self._needle_l, "L", QColor(Colors.ACCENT))
+            self._draw_broadcast_face(painter, rects[1], self._needle_r, "R", QColor(Colors.ACCENT_PINK))
+        else:
+            self._draw_broadcast_face(painter, QRectF(0, 0, w, h), self._needle_l, self._channel, QColor(Colors.ACCENT))
+        self._draw_corner_status(painter, w, h)
+
+    def _draw_broadcast_face(self, painter, rect, value, label, needle_col):
+        pad = max(4.0, min(9.0, min(rect.width(), rect.height()) * 0.08))
+        face = rect.adjusted(pad, pad, -pad, -pad)
+        if face.width() < 24 or face.height() < 24:
+            return
+
+        painter.setPen(QPen(QColor(Colors.BORDER), 1))
+        painter.setBrush(QBrush(QColor(Colors.BG_INPUT)))
+        painter.drawRoundedRect(face, 4, 4)
+
+        cx = face.center().x()
+        cy = face.bottom() - face.height() * 0.13
+        radius = min(face.width() * 0.48, face.height() * 0.95)
+        angle_start, angle_end = 150.0, 30.0
+        ticks = [-20, -10, -7, -5, -3, 0, 3]
+
+        for db in ticks:
+            frac = (db + 20.0) / 23.0
+            angle = math.radians(angle_start - frac * (angle_start - angle_end))
+            inner = radius * (0.78 if db in (-20, -10, 0, 3) else 0.86)
+            outer = radius * 0.96
+            col = QColor(Colors.METER_HIGH) if db >= 0 else QColor(Colors.TEXT_DIM)
+            painter.setPen(QPen(col, 1.5 if db in (-20, -10, 0, 3) else 0.8))
+            painter.drawLine(QPointF(cx + inner * math.cos(angle), cy - inner * math.sin(angle)),
+                             QPointF(cx + outer * math.cos(angle), cy - outer * math.sin(angle)))
+
+        frac = max(0.0, min(1.0, (value + 20.0) / 23.0))
+        angle = math.radians(angle_start - frac * (angle_start - angle_end))
+        end = QPointF(cx + radius * 0.92 * math.cos(angle), cy - radius * 0.92 * math.sin(angle))
+        painter.setPen(QPen(needle_col, max(1.5, min(3.0, radius * 0.025))))
+        painter.drawLine(QPointF(cx, cy), end)
+        painter.setBrush(QBrush(QColor(Colors.BG_DARKEST)))
+        painter.setPen(QPen(QColor(Colors.BORDER), 1))
+        painter.drawEllipse(QPointF(cx, cy), 5, 5)
+
+        painter.setFont(self.get_responsive_font(Fonts.small, 70, 16, label))
+        painter.setPen(QColor(Colors.TEXT_DIM))
+        painter.drawText(QRectF(face.left() + 6, face.top() + 4, 70, 16), Qt.AlignLeft | Qt.AlignVCenter, label)
+
     def _render_compaq(self, painter, w, h, vintage=False):
-        is_stereo = (self._channel == "L+R")
         if w < 36 or h < 36:
             return
 
-        side = min(w, h)
-        ox = (w - side) * 0.5
-        oy = (h - side) * 0.5
-        outer = QRectF(ox + 2, oy + 2, side - 4, side - 4)
-        inset = max(5.0, side * 0.075)
+        is_stereo = self._channel == "L+R"
+        if not is_stereo:
+            side = min(w, h)
+            rect = QRectF((w - side) * 0.5, (h - side) * 0.5, side, side)
+            self._draw_compaq_unit(
+                painter, rect, self._needle_l, self._channel, vintage,
+                self._peak_lit_l, self._clip_lit_l,
+            )
+            return
+
+        gap = max(4.0, min(10.0, min(w, h) * 0.045))
+        if w >= h * 1.45:
+            side = min(h, (w - gap) * 0.5)
+            total_w = side * 2 + gap
+            x = (w - total_w) * 0.5
+            y = (h - side) * 0.5
+            rects = [QRectF(x, y, side, side), QRectF(x + side + gap, y, side, side)]
+        else:
+            side = min(w, (h - gap) * 0.5)
+            total_h = side * 2 + gap
+            x = (w - side) * 0.5
+            y = (h - total_h) * 0.5
+            rects = [QRectF(x, y, side, side), QRectF(x, y + side + gap, side, side)]
+
+        self._draw_compaq_unit(
+            painter, rects[0], self._needle_l, "L", vintage,
+            self._peak_lit_l, self._clip_lit_l,
+        )
+        self._draw_compaq_unit(
+            painter, rects[1], self._needle_r, "R", vintage,
+            self._peak_lit_r, self._clip_lit_r,
+        )
+
+    def _draw_compaq_unit(self, painter, rect, value, label, vintage, peak_lit, clip_lit):
+        side = min(rect.width(), rect.height())
+        if side < 32:
+            return
+
+        outer = rect.adjusted(2, 2, -2, -2)
+        inset = max(4.0, side * 0.07)
         face = outer.adjusted(inset, inset, -inset, -inset)
 
         if vintage:
@@ -340,7 +633,7 @@ class VUMeterModule(BaseModule):
             text_col = QColor("#202020")
             dim_col = QColor("#6d6d60")
             red_col = QColor("#b03024")
-            needle_cols = [QColor("#101010"), QColor("#555555")]
+            needle_col = QColor("#101010")
             block_col = QColor("#e4e4dc")
             knob_col = QColor("#161616")
         else:
@@ -352,7 +645,7 @@ class VUMeterModule(BaseModule):
             text_col = QColor(Colors.TEXT)
             dim_col = QColor(Colors.TEXT_DIM)
             red_col = QColor(Colors.METER_HIGH)
-            needle_cols = [QColor(Colors.ACCENT), QColor(Colors.ACCENT_PINK)]
+            needle_col = QColor(Colors.ACCENT if label != "R" else Colors.ACCENT_PINK)
             block_col = QColor(Colors.BG_HEADER)
             knob_col = QColor(Colors.ACCENT)
 
@@ -370,68 +663,70 @@ class VUMeterModule(BaseModule):
             f.setBold(bold)
             return f
 
-        block_w = face.width() * 0.36
-        block_h = face.height() * 0.30
+        block_w = face.width() * 0.34
+        block_h = face.height() * 0.28
         block = QRectF(face.right() - block_w - 2, face.bottom() - block_h - 2, block_w, block_h)
-        knob = QPointF(block.center().x() + block_w * 0.22, block.center().y() + block_h * 0.12)
+        knob = QPointF(block.center().x() + block_w * 0.20, block.center().y() + block_h * 0.10)
 
         cx = knob.x()
         cy = knob.y()
-        radius = max(10.0, min((cx - face.left()) * 0.92, (cy - face.top()) * 0.88))
-        angle_start, angle_end = 176.0, 96.0
+        radius = max(10.0, min((cx - face.left()) * 0.90, (cy - face.top()) * 0.92))
+        angle_start, angle_end = 170.0, 42.0
 
         def point_at(frac, r):
             angle = math.radians(angle_start - frac * (angle_start - angle_end))
             return QPointF(cx + r * math.cos(angle), cy - r * math.sin(angle))
 
-        tick_count = 26 if side >= 120 else 18
+        scale_end = 0.92
+        tick_count = 12 if side >= 120 else 8
         for i in range(tick_count + 1):
-            frac = i / tick_count
-            is_major = i % max(1, tick_count // 4) == 0
-            is_mid = i % max(1, tick_count // 8) == 0
-            inner = radius * (0.76 if is_major else 0.84 if is_mid else 0.89)
-            outer_r = radius * 0.96
-            col = red_col if frac >= 0.82 else tick_col
-            painter.setPen(QPen(col, 1.4 if is_major else 0.9))
+            frac = (i / tick_count) * scale_end
+            is_major = i in (0, tick_count // 2, tick_count)
+            is_mid = i % max(1, tick_count // 4) == 0
+            inner = radius * (0.84 if is_major else 0.88 if is_mid else 0.92)
+            outer_r = radius * 0.98
+            col = red_col if i == tick_count else tick_col
+            if not is_major:
+                col = QColor(col)
+                col.setAlpha(170 if is_mid else 120)
+            painter.setPen(QPen(col, 1.3 if is_major else 0.75))
             painter.drawLine(point_at(frac, inner), point_at(frac, outer_r))
 
-        if side < 82:
-            label_items = []
-        elif side < 115:
-            label_items = [(0.60, "100")]
-        elif side < 145:
-            label_items = [(0.30, "50"), (0.60, "100")]
-        else:
-            label_items = [(0.30, "50"), (0.60, "100"), (0.90, "150")]
-        label_w = max(16, min(30, face.width() * 0.19))
-        label_h = max(9, min(15, face.height() * 0.11))
-        label_r = radius * (0.68 if side >= 120 else 0.60)
-        for frac, label in label_items:
-            pos = point_at(frac, label_r)
-            painter.setFont(compaq_font(label_h * 0.75, True))
-            painter.setPen(text_col)
-            painter.drawText(QRectF(pos.x() - label_w / 2, pos.y() - label_h / 2, label_w, label_h), Qt.AlignCenter, label)
+        if side >= 82:
+            if side < 115:
+                label_items = [(scale_end, "100")]
+            elif side < 145:
+                label_items = [(scale_end * 0.5, "50"), (scale_end, "100")]
+            else:
+                label_items = [(0.00, "0"), (scale_end * 0.5, "50"), (scale_end, "100")]
+            label_w = max(16, min(30, face.width() * 0.19))
+            label_h = max(9, min(15, face.height() * 0.11))
+            label_r = radius * (0.66 if side >= 120 else 0.58)
+            for frac, text in label_items:
+                pos = point_at(frac, label_r)
+                painter.setFont(compaq_font(label_h * 0.75, True))
+                painter.setPen(text_col)
+                lx = max(face.left() + 1, min(face.right() - label_w - 1, pos.x() - label_w / 2))
+                ly = max(face.top() + 1, min(face.bottom() - label_h - 1, pos.y() - label_h / 2))
+                painter.drawText(QRectF(lx, ly, label_w, label_h), Qt.AlignCenter, text)
 
-        painter.setFont(compaq_font(min(18, max(8, face.height() * 0.17)), False))
+        painter.setFont(compaq_font(min(18, max(8, face.height() * 0.16)), False))
         painter.setPen(text_col)
-        painter.drawText(QRectF(face.left() + 8, face.top() + 8, face.width() * 0.22, 20), Qt.AlignLeft, "A")
+        painter.drawText(QRectF(face.left() + 7, face.top() + 7, face.width() * 0.22, 20), Qt.AlignLeft, "A")
+
+        painter.setFont(compaq_font(min(12, max(6, face.height() * 0.09)), True))
+        painter.setPen(dim_col)
+        painter.drawText(QRectF(face.left() + 6, face.bottom() - 18, face.width() * 0.28, 12), Qt.AlignLeft | Qt.AlignVCenter, label)
 
         if side >= 105:
-            brand = "PYDSP"
             painter.setFont(compaq_font(min(7, max(5, face.height() * 0.055)), True))
             painter.setPen(dim_col)
-            painter.drawText(QRectF(face.center().x() - face.width() * 0.08, face.center().y() - 4, face.width() * 0.26, 10), Qt.AlignCenter, brand)
+            painter.drawText(QRectF(face.center().x() - face.width() * 0.10, face.center().y() - 4, face.width() * 0.30, 10), Qt.AlignCenter, "PYDSP")
 
-        vals = [self._needle_l, self._needle_r] if is_stereo else [self._needle_l]
-        for idx, val in enumerate(vals):
-            frac = max(0.0, min(1.0, (val + 20.0) / 23.0))
-            end = point_at(frac, radius * 0.74)
-            col = QColor(needle_cols[idx % len(needle_cols)])
-            if is_stereo and idx == 1:
-                col.setAlpha(180)
-            painter.setPen(QPen(col, 2.2 if idx == 0 else 1.5))
-            y_off = idx * max(1.0, side * 0.009) if is_stereo else 0.0
-            painter.drawLine(QPointF(cx, cy + y_off), QPointF(end.x(), end.y() + y_off))
+        frac = max(0.0, min(1.0, (value + 20.0) / 23.0)) * scale_end
+        end = point_at(frac, radius * 0.76)
+        painter.setPen(QPen(needle_col, max(1.3, side * 0.014)))
+        painter.drawLine(knob, end)
 
         painter.setPen(QPen(face_shadow, 1))
         painter.setBrush(QBrush(block_col))
@@ -448,8 +743,7 @@ class VUMeterModule(BaseModule):
             show_led_labels = side >= 115 and block.width() > 42
             painter.setFont(compaq_font(6, False))
             if self._show_peak:
-                lit = self._peak_lit_l or self._peak_lit_r
-                painter.setBrush(QColor(Colors.PEAK_LED) if lit else QColor(Colors.BG_INPUT))
+                painter.setBrush(QColor(Colors.PEAK_LED) if peak_lit else QColor(Colors.BG_INPUT))
                 painter.setPen(QPen(face_shadow, 1))
                 painter.drawEllipse(QPointF(led_x, led_y), led_r, led_r)
                 if show_led_labels:
@@ -457,8 +751,7 @@ class VUMeterModule(BaseModule):
                     painter.drawText(QRectF(label_x, led_y - 5, 20, 10), Qt.AlignLeft | Qt.AlignVCenter, "PK")
                 led_y -= led_r * 2 + 4
             if self._show_clip:
-                lit = self._clip_lit_l or self._clip_lit_r
-                painter.setBrush(QColor(Colors.CLIP_LED) if lit else QColor(Colors.BG_INPUT))
+                painter.setBrush(QColor(Colors.CLIP_LED) if clip_lit else QColor(Colors.BG_INPUT))
                 painter.setPen(QPen(face_shadow, 1))
                 painter.drawEllipse(QPointF(led_x, led_y), led_r, led_r)
                 if show_led_labels:
