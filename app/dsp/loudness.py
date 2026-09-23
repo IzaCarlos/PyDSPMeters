@@ -4,7 +4,6 @@ Implements K-weighting filters and gated loudness calculation.
 """
 
 import numpy as np
-from scipy.signal import sosfilt, butter
 from app.dsp import accel as dsp_accel
 
 
@@ -114,7 +113,7 @@ class LoudnessMeter:
         # Apply K-weighting per channel
         filtered = np.zeros_like(data[:, :ch], dtype=np.float64)
         for c in range(ch):
-            filtered[:, c], self._zi[c] = sosfilt(
+            filtered[:, c], self._zi[c] = dsp_accel.sosfilt(
                 self._sos, data[:, c].astype(np.float64), zi=self._zi[c]
             )
 

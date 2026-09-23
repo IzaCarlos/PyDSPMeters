@@ -17,7 +17,6 @@ DEFAULT_ICON = "icon.ico"
 BENIGN_HIDDEN_IMPORTS = {
     "pycparser.lextab",
     "pycparser.yacctab",
-    "scipy.special._cdflib",
 }
 HIDDEN_IMPORT_RE = re.compile(r'Hidden import "([^"]+)" not found')
 
@@ -75,13 +74,8 @@ DEFAULT_EXCLUDES = [
     "PySide6.QtNfc",
     "PySide6.QtSerialPort",
     "PySide6.QtTest",
-    # Unused heavy SciPy subpackages
-    "scipy.spatial",
-    "scipy.optimize",
-    "scipy.stats",
-    "scipy.integrate",
-    "scipy.ndimage",
-    "scipy.sparse",
+    # Unused third-party packages (superseded by Rust/NumPy)
+    "scipy",
 ]
 
 
@@ -533,6 +527,7 @@ def parse_args():
     parser.add_argument("--hidden-import", action="append", default=[], help="Extra hidden import to pass to PyInstaller.")
     parser.add_argument("--exclude", action="append", default=[], help="Extra module to exclude from PyInstaller bundle.")
     parser.add_argument("--no-default-excludes", action="store_true", help="Disable default module exclusions.")
+    parser.add_argument("--zip", action="store_true", help="Create a .zip archive of the dist output.")
     parser.add_argument("--add-data", action="append", default=[], help=f"Extra PyInstaller data entry, e.g. source{data_separator()}dest.")
     return parser.parse_args()
 
@@ -577,6 +572,14 @@ def build():
 
     if not verify_build(args):
         return 1
+
+    if args.zip or args.one_dir:
+        target_path = Path(args.dist_dir) / args.resolved_name
+        if target_path.is_dir():
+            print_step("Creating zip archive")
+            archive_base = Path(args.dist_dir) / args.resolved_name
+            zip_path = shutil.make_archive(str(archive_base), "zip", root_dir=args.dist_dir, base_dir=args.resolved_name)
+            print_success(f"Created archive: {zip_path}")
 
     print_success("Build completed successfully.")
     return 0

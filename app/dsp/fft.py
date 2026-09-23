@@ -4,12 +4,41 @@ Supports multiple FFT sizes, window functions, and frequency scaling (Mel, Log, 
 """
 
 import numpy as np
-from scipy.fft import rfft, rfftfreq
-from scipy.signal import get_window
 import app.dsp.accel as accel
 
 
 _WINDOW_CACHE = {}
+
+
+def create_window(name: str, size: int) -> np.ndarray:
+    """Generate periodic window (fftbins=True) without external dependencies."""
+    if size <= 1:
+        return np.ones(size, dtype=np.float32)
+    n = np.arange(size, dtype=np.float64) / float(size)
+    key = (name or "hann").lower().replace("-", "").replace("_", "")
+    if key in ("hann", "hanning"):
+        w = 0.5 - 0.5 * np.cos(2.0 * np.pi * n)
+    elif key == "hamming":
+        w = 0.54 - 0.46 * np.cos(2.0 * np.pi * n)
+    elif key == "blackman":
+        w = 0.42 - 0.5 * np.cos(2.0 * np.pi * n) + 0.08 * np.cos(4.0 * np.pi * n)
+    elif key in ("blackmanharris", "blackman_harris"):
+        w = (0.35875
+             - 0.48829 * np.cos(2.0 * np.pi * n)
+             + 0.14128 * np.cos(4.0 * np.pi * n)
+             - 0.01168 * np.cos(6.0 * np.pi * n))
+    elif key == "flattop":
+        w = (0.21557895
+             - 0.41663158 * np.cos(2.0 * np.pi * n)
+             + 0.277263158 * np.cos(4.0 * np.pi * n)
+             - 0.083578947 * np.cos(6.0 * np.pi * n)
+             + 0.006947368 * np.cos(8.0 * np.pi * n))
+    elif key in ("rect", "rectangular", "boxcar"):
+        w = np.ones(size, dtype=np.float64)
+    else:
+        w = 0.5 - 0.5 * np.cos(2.0 * np.pi * n)
+    return w.astype(np.float32)
+
 
 def compute_fft(data: np.ndarray, fft_size: int = 4096,
                 window: str = "hann") -> np.ndarray:
@@ -21,15 +50,15 @@ def compute_fft(data: np.ndarray, fft_size: int = 4096,
     if cache_key in _WINDOW_CACHE:
         win = _WINDOW_CACHE[cache_key]
     else:
-        win = get_window(window, fft_size, fftbins=True).astype(np.float32)
+        win = create_window(window, fft_size)
         _WINDOW_CACHE[cache_key] = win
-        
+
     return accel.compute_fft(data, win, fft_size)
 
 
 def fft_frequencies(fft_size: int, sample_rate: float) -> np.ndarray:
     """Return the frequency array for a given FFT size."""
-    return rfftfreq(fft_size, d=1.0 / sample_rate)
+    return np.fft.rfftfreq(fft_size, d=1.0 / sample_rate)
 
 
 # ── Frequency Scale Mappings ────────────────────────────────────────────────

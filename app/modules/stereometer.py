@@ -5,13 +5,27 @@ Stereometer Module: Lissajous / Linear / Scaled stereo display with correlation 
 import numpy as np
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPixmap
 from PySide6.QtCore import Qt, QPointF, QRectF
-from scipy.signal import get_window
 
 from app.base_module import BaseModule
 from app.modules import register_module
 from app.theme import Colors, Fonts
 from app.dsp.correlation import correlation, multiband_correlation
 from app.dsp.filters import MultiBandFilter
+
+
+def _tukey_window(n: int, alpha: float = 0.5) -> np.ndarray:
+    if n <= 1 or alpha <= 0.0:
+        return np.ones(n, dtype=np.float32)
+    if alpha >= 1.0:
+        return (0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(n) / (n - 1))).astype(np.float32)
+    x = np.arange(n, dtype=np.float64) / (n - 1)
+    w = np.ones(n, dtype=np.float64)
+    edge = alpha / 2.0
+    left_mask = x < edge
+    w[left_mask] = 0.5 * (1.0 - np.cos(np.pi * x[left_mask] / edge))
+    right_mask = x > (1.0 - edge)
+    w[right_mask] = 0.5 * (1.0 - np.cos(np.pi * (1.0 - x[right_mask]) / edge))
+    return w.astype(np.float32)
 
 
 @register_module("stereometer", "Stereometer")
@@ -272,7 +286,7 @@ class StereometerModule(BaseModule):
         if cache_key in self._window_cache:
             win = self._window_cache[cache_key]
         else:
-            win = get_window(('tukey', self._window_alpha), n, fftbins=False).astype(np.float32)
+            win = _tukey_window(n, self._window_alpha)
             self._window_cache[cache_key] = win
             
         self._left = (l_proc * win)

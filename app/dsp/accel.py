@@ -102,10 +102,9 @@ def generate_spectrogram_column(norm, px_int, n_bins, display_h):
     
     nonzero = np.where(column > 0)[0]
     if len(nonzero) > 1:
-        from scipy.interpolate import interp1d
-        f = interp1d(nonzero, column[nonzero], kind='linear', fill_value="nearest")
         full_idx = np.arange(nonzero[0], nonzero[-1] + 1)
-        column[full_idx] = np.maximum(column[full_idx], f(full_idx))
+        interp_vals = np.interp(full_idx, nonzero, column[nonzero])
+        column[full_idx] = np.maximum(column[full_idx], interp_vals)
     
     return column
 
@@ -277,8 +276,7 @@ def compute_fft(data, window, fft_size):
     padded[:n] = data[:n]
     windowed = padded * window
     
-    from scipy.fft import rfft
-    spectrum = rfft(windowed)
+    spectrum = np.fft.rfft(windowed)
     magnitude = np.abs(spectrum)
     # Correct normalization for windowed real FFT: 
     # Standard: magnitude * 2 / sum(window)
@@ -382,15 +380,16 @@ def _calculate_true_peak_py(data: np.ndarray) -> np.ndarray:
         result = np.full(data.shape[1], -120.0, dtype=np.float64)
         return float(result[0]) if was_1d else result
 
-    try:
-        from scipy.signal import resample_poly
-        up = resample_poly(data, 4, 1, axis=0)
-        peaks = np.max(np.abs(up), axis=0)
-        result = 20.0 * np.log10(np.clip(peaks, 1e-6, None))
-    except Exception:
-        peaks = np.max(np.abs(data), axis=0)
-        result = 20.0 * np.log10(np.clip(peaks, 1e-6, None))
+    # 4x oversampling linear interpolation fallback
+    n_samples, n_channels = data.shape
+    peaks = np.zeros(n_channels, dtype=np.float64)
+    x_orig = np.arange(n_samples, dtype=np.float64)
+    x_up = np.linspace(0, n_samples - 1, (n_samples - 1) * 4 + 1)
+    for c in range(n_channels):
+        up = np.interp(x_up, x_orig, data[:, c])
+        peaks[c] = np.max(np.abs(up))
 
+    result = 20.0 * np.log10(np.clip(peaks, 1e-6, None))
     return float(result[0]) if was_1d else result
 
 
@@ -406,5 +405,50 @@ def calculate_true_peak(data: np.ndarray) -> np.ndarray:
         return float(result[0]) if was_1d else result
 
     return _calculate_true_peak_py(data)
+
+
+# ── Biquad Second-Order Sections (SOS) Filter ──────────────────────────────
+
+def _sosfilt_py(sos: np.ndarray, x: np.ndarray, zi: np.ndarray = None):
+    n_sections = sos.shape[0]
+    if zi is None:
+        zi = np.zeros((n_sections, 2), dtype=np.float64)
+    else:
+        zi = np.array(zi, dtype=np.float64, copy=True)
+
+    y = np.array(x, dtype=np.float64, copy=True)
+    n_samples = len(y)
+
+    for s in range(n_sections):
+        b0, b1, b2, a0, a1, a2 = sos[s]
+        inv_a0 = 1.0 / a0 if abs(a0) > 1e-15 else 1.0
+        b0, b1, b2, a1, a2 = b0 * inv_a0, b1 * inv_a0, b2 * inv_a0, a1 * inv_a0, a2 * inv_a0
+        z1, z2 = float(zi[s, 0]), float(zi[s, 1])
+
+        for i in range(n_samples):
+            xi = y[i]
+            yi = b0 * xi + z1
+            z1 = b1 * xi - a1 * yi + z2
+            z2 = b2 * xi - a2 * yi
+            y[i] = yi
+
+        zi[s, 0] = z1
+        zi[s, 1] = z2
+
+    return y, zi
+
+
+def sosfilt(sos: np.ndarray, data: np.ndarray, zi: np.ndarray = None):
+    """
+    Apply second-order sections (biquad) IIR filter.
+    Returns: (filtered_data, updated_zi)
+    """
+    if _HAS_NATIVE and hasattr(_native, "sosfilt"):
+        f64_sos = np.ascontiguousarray(sos, dtype=np.float64)
+        f64_data = np.ascontiguousarray(data, dtype=np.float64)
+        f64_zi = np.ascontiguousarray(zi, dtype=np.float64) if zi is not None else None
+        return _native.sosfilt(f64_sos, f64_data, f64_zi)
+    return _sosfilt_py(sos, data, zi)
+
 
 

@@ -4,13 +4,44 @@ Uses Linkwitz-Riley (4th order Butterworth cascade) for flat summing.
 """
 
 import numpy as np
-from scipy.signal import butter, sosfilt
+from app.dsp import accel as dsp_accel
+
+
+def _butter_lowpass_sos_4th(fc: float, sr: float) -> np.ndarray:
+    w0 = 2.0 * np.pi * min(fc, sr * 0.499) / sr
+    K = np.tan(w0 / 2.0)
+    K2 = K * K
+    sos = []
+    for q_inv in [0.7653668647301795, 1.8477590650225735]:
+        a0 = 1.0 + q_inv * K + K2
+        b0 = K2 / a0
+        b1 = 2.0 * b0
+        b2 = b0
+        a1 = 2.0 * (K2 - 1.0) / a0
+        a2 = (1.0 - q_inv * K + K2) / a0
+        sos.append([b0, b1, b2, 1.0, a1, a2])
+    return np.array(sos, dtype=np.float64)
+
+
+def _butter_highpass_sos_4th(fc: float, sr: float) -> np.ndarray:
+    w0 = 2.0 * np.pi * min(fc, sr * 0.499) / sr
+    K = np.tan(w0 / 2.0)
+    K2 = K * K
+    sos = []
+    for q_inv in [0.7653668647301795, 1.8477590650225735]:
+        a0 = 1.0 + q_inv * K + K2
+        b0 = 1.0 / a0
+        b1 = -2.0 * b0
+        b2 = b0
+        a1 = 2.0 * (K2 - 1.0) / a0
+        a2 = (1.0 - q_inv * K + K2) / a0
+        sos.append([b0, b1, b2, 1.0, a1, a2])
+    return np.array(sos, dtype=np.float64)
 
 
 class MultiBandFilter:
     """
     3-band crossover filter (Low / Mid / High).
-
     Crossover frequencies default to 250 Hz and 4000 Hz.
     Uses 4th-order Butterworth filters for clean separation.
     """
@@ -24,32 +55,20 @@ class MultiBandFilter:
 
     def _design_filters(self):
         """Design the crossover filter bank."""
-        nyq = self.sample_rate / 2.0
-        # Low-pass for low band
-        self._sos_low = butter(4, self.low_cut / nyq, btype='low', output='sos')
-        # Band-pass for mid band
-        self._sos_mid = butter(
-            4, [self.low_cut / nyq, self.high_cut / nyq],
-            btype='band', output='sos'
-        )
-        # High-pass for high band
-        self._sos_high = butter(4, self.high_cut / nyq, btype='high', output='sos')
+        self._sos_low = _butter_lowpass_sos_4th(self.low_cut, self.sample_rate)
+        self._sos_high = _butter_highpass_sos_4th(self.high_cut, self.sample_rate)
+        self._sos_mid = np.vstack([
+            _butter_highpass_sos_4th(self.low_cut, self.sample_rate),
+            _butter_lowpass_sos_4th(self.high_cut, self.sample_rate),
+        ])
 
     def split(self, data: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Split audio into three bands.
-
-        Args:
-            data: 1-D audio samples.
-
-        Returns:
-            (low, mid, high) band arrays.
-        """
+        """Split audio into three bands."""
         data_f64 = data.astype(np.float64)
-        low = sosfilt(self._sos_low, data_f64).astype(np.float32)
-        mid = sosfilt(self._sos_mid, data_f64).astype(np.float32)
-        high = sosfilt(self._sos_high, data_f64).astype(np.float32)
-        return low, mid, high
+        low, _ = dsp_accel.sosfilt(self._sos_low, data_f64)
+        mid, _ = dsp_accel.sosfilt(self._sos_mid, data_f64)
+        high, _ = dsp_accel.sosfilt(self._sos_high, data_f64)
+        return low.astype(np.float32), mid.astype(np.float32), high.astype(np.float32)
 
 
 class StreamingMultiBandFilter:
@@ -65,29 +84,22 @@ class StreamingMultiBandFilter:
         self._filters = [MultiBandFilter(sample_rate, low_cut, high_cut)
                          for _ in range(channels)]
 
-        # Filter states for streaming
-        nyq = sample_rate / 2.0
-        sos_low = butter(4, low_cut / nyq, btype='low', output='sos')
-        sos_mid = butter(4, [low_cut / nyq, high_cut / nyq], btype='band', output='sos')
-        sos_high = butter(4, high_cut / nyq, btype='high', output='sos')
+        sos_low = _butter_lowpass_sos_4th(low_cut, sample_rate)
+        sos_high = _butter_highpass_sos_4th(high_cut, sample_rate)
+        sos_mid = np.vstack([
+            _butter_highpass_sos_4th(low_cut, sample_rate),
+            _butter_lowpass_sos_4th(high_cut, sample_rate),
+        ])
 
-        self._zi_low = [np.zeros((sos_low.shape[0], 2)) for _ in range(channels)]
-        self._zi_mid = [np.zeros((sos_mid.shape[0], 2)) for _ in range(channels)]
-        self._zi_high = [np.zeros((sos_high.shape[0], 2)) for _ in range(channels)]
+        self._zi_low = [np.zeros((sos_low.shape[0], 2), dtype=np.float64) for _ in range(channels)]
+        self._zi_mid = [np.zeros((sos_mid.shape[0], 2), dtype=np.float64) for _ in range(channels)]
+        self._zi_high = [np.zeros((sos_high.shape[0], 2), dtype=np.float64) for _ in range(channels)]
         self._sos_low = sos_low
         self._sos_mid = sos_mid
         self._sos_high = sos_high
 
     def process(self, data: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Process a block of multi-channel audio.
-
-        Args:
-            data: Shape (n_samples, channels).
-
-        Returns:
-            (low, mid, high) each of shape (n_samples, channels).
-        """
+        """Process a block of multi-channel audio."""
         if data.ndim == 1:
             data = data[:, np.newaxis]
         n, ch = data.shape
@@ -99,8 +111,9 @@ class StreamingMultiBandFilter:
 
         for c in range(ch):
             d = data[:, c].astype(np.float64)
-            low[:, c], self._zi_low[c] = sosfilt(self._sos_low, d, zi=self._zi_low[c])
-            mid[:, c], self._zi_mid[c] = sosfilt(self._sos_mid, d, zi=self._zi_mid[c])
-            high[:, c], self._zi_high[c] = sosfilt(self._sos_high, d, zi=self._zi_high[c])
+            low[:, c], self._zi_low[c] = dsp_accel.sosfilt(self._sos_low, d, zi=self._zi_low[c])
+            mid[:, c], self._zi_mid[c] = dsp_accel.sosfilt(self._sos_mid, d, zi=self._zi_mid[c])
+            high[:, c], self._zi_high[c] = dsp_accel.sosfilt(self._sos_high, d, zi=self._zi_high[c])
 
         return low.astype(np.float32), mid.astype(np.float32), high.astype(np.float32)
+

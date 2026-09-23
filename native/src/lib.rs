@@ -718,6 +718,58 @@ fn calculate_true_peak<'py>(
 }
 
 
+// ── Biquad Second-Order Sections (SOS) Filter ──────────────────────────────
+
+/// Apply cascaded second-order sections (biquads) in Transposed Direct Form II.
+#[pyfunction]
+fn sosfilt<'py>(
+    py: Python<'py>,
+    sos: PyReadonlyArray2<'py, f64>,
+    data: PyReadonlyArray1<'py, f64>,
+    zi: Option<PyReadonlyArray2<'py, f64>>,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray2<f64>>)> {
+    let sos_arr = sos.as_array();
+    let n_sections = sos_arr.shape()[0];
+    let data_arr = data.as_array();
+    let n_samples = data_arr.len();
+
+    let mut y = data_arr.to_vec();
+    let mut zi_mat = match zi {
+        Some(ref z) => z.as_array().to_owned(),
+        None => numpy::ndarray::Array2::<f64>::zeros((n_sections, 2)),
+    };
+
+    for s in 0..n_sections {
+        let a0 = sos_arr[[s, 3]];
+        let inv_a0 = if a0.abs() > 1e-15 { 1.0 / a0 } else { 1.0 };
+        let b0 = sos_arr[[s, 0]] * inv_a0;
+        let b1 = sos_arr[[s, 1]] * inv_a0;
+        let b2 = sos_arr[[s, 2]] * inv_a0;
+        let a1 = sos_arr[[s, 4]] * inv_a0;
+        let a2 = sos_arr[[s, 5]] * inv_a0;
+
+        let mut z1 = zi_mat[[s, 0]];
+        let mut z2 = zi_mat[[s, 1]];
+
+        for i in 0..n_samples {
+            let xi = y[i];
+            let yi = b0 * xi + z1;
+            z1 = b1 * xi - a1 * yi + z2;
+            z2 = b2 * xi - a2 * yi;
+            y[i] = yi;
+        }
+
+        zi_mat[[s, 0]] = z1;
+        zi_mat[[s, 1]] = z2;
+    }
+
+    Ok((
+        y.into_pyarray(py).into(),
+        zi_mat.into_pyarray(py).into(),
+    ))
+}
+
+
 // ── Module Registration ─────────────────────────────────────────────────────
 
 #[pymodule]
@@ -734,6 +786,7 @@ fn dsp_accel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(multiband_correlation, m)?)?;
     m.add_function(wrap_pyfunction!(prepare_oscilloscope_trace, m)?)?;
     m.add_function(wrap_pyfunction!(calculate_true_peak, m)?)?;
+    m.add_function(wrap_pyfunction!(sosfilt, m)?)?;
     Ok(())
 }
 
