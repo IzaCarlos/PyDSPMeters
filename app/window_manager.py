@@ -548,7 +548,7 @@ class MainWindow(QMainWindow):
         self._is_ready = True
         self._maybe_enable_ghost_hover()
 
-    # ── Device Management ───────────────────────────────────────────────────
+    #  Device Management
 
     def _refresh_devices(self):
         self._devices = AudioEngine.list_devices()
@@ -567,7 +567,7 @@ class MainWindow(QMainWindow):
                 m.on_channels_changed()
             m.update()
 
-    # ── Gear Menu (Device + Theme) ──────────────────────────────────────────
+    #  Gear Menu (Device + Theme)
 
     def _show_gear_menu(self):
         from PySide6.QtWidgets import QWidgetAction, QSlider, QHBoxLayout, QLineEdit
@@ -629,21 +629,35 @@ class MainWindow(QMainWindow):
             act.setEnabled(False)
         menu.addSeparator()
 
-        # 1. Device Management (Categorized by API)
-        dev_menu = menu.addMenu("🎤  Audio Device")
-        self._refresh_devices()
-        apis = {}
-        for d in self._devices:
-            apis.setdefault(d["hostapi"], []).append(d)
-        for api_name, devs in apis.items():
-            api_submenu = dev_menu.addMenu(api_name)
-            for d in devs:
-                act = QAction(d["name"], self)
-                act.setCheckable(True); act.setChecked(self._current_device == d["index"])
-                act.triggered.connect(lambda checked, i=d["index"], fid=d["full_id"]: self._select_device(i, fid))
-                api_submenu.addAction(act)
+        # 1. Device Management (Lazy loaded on hover)
+        dev_menu = menu.addMenu("Audio Device")
+        def populate_devices():
+            if not dev_menu.isEmpty():
+                return
+            if not getattr(self, "_devices", None):
+                self._refresh_devices()
+            apis = {}
+            for d in self._devices:
+                apis.setdefault(d["hostapi"], []).append(d)
+            for api_name, devs in apis.items():
+                api_submenu = dev_menu.addMenu(api_name)
+                for d in devs:
+                    act = QAction(d["name"], self)
+                    act.setCheckable(True)
+                    act.setChecked(self._current_device == d["index"])
+                    act.triggered.connect(lambda checked, i=d["index"], fid=d["full_id"]: self._select_device(i, fid))
+                    api_submenu.addAction(act)
+            dev_menu.addSeparator()
+            rescan_act = dev_menu.addAction("Rescan Audio Devices")
+            def rescan():
+                self._refresh_devices()
+                dev_menu.clear()
+                populate_devices()
+            rescan_act.triggered.connect(rescan)
 
-        chan_menu = menu.addMenu("🔢  Channels")
+        dev_menu.aboutToShow.connect(populate_devices)
+
+        chan_menu = menu.addMenu("Channels")
         for c in [1, 2]:
             act = QAction("Mono" if c == 1 else "Stereo", self)
             act.setCheckable(True); act.setChecked(self.audio_engine.channels == c)
@@ -660,18 +674,24 @@ class MainWindow(QMainWindow):
         
         menu.addSeparator()
 
-        # 3. Appearance & UI
-        theme_menu = menu.addMenu("🎨  Theme Presets")
-        current = current_theme_name()
-        for group_name, theme_names in THEME_GROUPS.items():
-            group_sub = theme_menu.addMenu(group_name)
-            for name in theme_names:
-                if name not in THEME_PRESETS and not name.endswith(" [!]"):
-                    continue
-                act = QAction(name, self)
-                act.setCheckable(True); act.setChecked(name == current)
-                act.triggered.connect(lambda checked, n=name: self._apply_theme(n))
-                group_sub.addAction(act)
+        # 3. Appearance & UI (Lazy loaded on hover)
+        theme_menu = menu.addMenu("Theme Presets")
+        def populate_themes():
+            if not theme_menu.isEmpty():
+                return
+            current = current_theme_name()
+            for group_name, theme_names in THEME_GROUPS.items():
+                group_sub = theme_menu.addMenu(group_name)
+                for name in theme_names:
+                    if name not in THEME_PRESETS and not name.endswith(" [!]"):
+                        continue
+                    act = QAction(name, self)
+                    act.setCheckable(True)
+                    act.setChecked(name == current)
+                    act.triggered.connect(lambda checked, n=name: self._apply_theme(n))
+                    group_sub.addAction(act)
+
+        theme_menu.aboutToShow.connect(populate_themes)
 
         headers_act = menu.addAction("Show Module Headers")
         headers_act.setCheckable(True)
@@ -683,12 +703,12 @@ class MainWindow(QMainWindow):
         ghost_act.setChecked(self._auto_hide_ui)
         ghost_act.triggered.connect(self._toggle_ghost_mode)
         
-        move_mode_act = menu.addAction("✥ Enable Move Mode")
+        move_mode_act = menu.addAction("Enable Move Mode")
         move_mode_act.setCheckable(True)
         move_mode_act.setChecked(getattr(self, "_move_mode_active", False))
         move_mode_act.triggered.connect(self._toggle_move_mode)
         
-        appbar_menu = menu.addMenu("📌  Dock as App Bar")
+        appbar_menu = menu.addMenu("Dock as App Bar")
         toggle_act = appbar_menu.addAction("Enable App Bar")
         toggle_act.setCheckable(True)
         toggle_act.setChecked(self._appbar_active)
@@ -796,7 +816,7 @@ class MainWindow(QMainWindow):
 
         self._layout_vertical = win_s.get("vertical_layout", True)
         self.splitter.setOrientation(Qt.Vertical if self._layout_vertical else Qt.Horizontal)
-        self.title_bar.layout_btn.setText("â–¥" if self._layout_vertical else "â–¤")
+        self.title_bar.layout_btn.setText("▥" if self._layout_vertical else "▤")
 
         Fonts.TEXT_SCALE = ui_s.get("text_scale", 1.0)
         theme_name = ui_s.get("theme", "Midnight")
@@ -1054,6 +1074,8 @@ class MainWindow(QMainWindow):
         was_visible = widget.isVisible()
         effect = widget.graphicsEffect()
         if not isinstance(effect, QGraphicsOpacityEffect):
+            if was_visible == visible:
+                return
             effect = QGraphicsOpacityEffect(widget)
             widget.setGraphicsEffect(effect)
             effect.setOpacity(1.0 if was_visible else 0.0)
@@ -1111,7 +1133,7 @@ class MainWindow(QMainWindow):
             self._schedule_ghost_mode_update()
         super().leaveEvent(event)
 
-    # ── App Bar ──────────────────────────────────────────────────────────────
+    #  App Bar
 
     def nativeEvent(self, event_type, message):
         import sys
@@ -1515,7 +1537,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[AppBar] Failed to release (Linux): {e}")
 
-    # ── Module Management ───────────────────────────────────────────────────
+    #  Module Management
 
     def _module_minimum_extent(self):
         return MODULE_MIN_HEIGHT if self.splitter.orientation() == Qt.Vertical else MODULE_MIN_WIDTH
@@ -1674,7 +1696,7 @@ class MainWindow(QMainWindow):
         # Refresh divider style to update margins and respect opacity
         self._set_divider_opacity(self._settings.get("window", {}).get("divider_opacity", 100))
 
-    # ── Snapping ────────────────────────────────────────────────────────────
+    #  Snapping
     
     def snap_to_edge(self):
         screen = QApplication.primaryScreen()
@@ -1687,7 +1709,7 @@ class MainWindow(QMainWindow):
         w, h = self.width(), self.height()
         t = self.SNAP_THRESHOLD
 
-        # ── Horizontal Snapping (Position & Size) ───────────────────────────
+        #  Horizontal Snapping (Position & Size)
         
         # Snap width to full/avail width
         if abs(w - avail.width()) < t:
@@ -1710,7 +1732,7 @@ class MainWindow(QMainWindow):
         if abs(x + w // 2 - cx) < t:
             x = cx - w // 2
 
-        # ── Vertical Snapping (Position & Size) ─────────────────────────────
+        #  Vertical Snapping (Position & Size)
         
         # Snap height to full/avail height
         if abs(h - avail.height()) < t:
@@ -1732,7 +1754,7 @@ class MainWindow(QMainWindow):
             self.resize(w, h)
         self.move(x, y)
 
-    # ── Events ──────────────────────────────────────────────────────────────
+    #  Events
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

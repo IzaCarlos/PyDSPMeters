@@ -13,7 +13,6 @@ from app.dsp.correlation import correlation, multiband_correlation, stereo_to_mi
 from app.dsp.filters import MultiBandFilter
 
 
-# ── FFT Tests ───────────────────────────────────────────────────────────────
 
 class TestFFT:
     def test_compute_fft_returns_correct_shape(self):
@@ -64,7 +63,6 @@ class TestFFT:
         np.testing.assert_allclose(tilted, [-6.0, 0.0, 6.0], atol=0.01)
 
 
-# ── Loudness Tests ──────────────────────────────────────────────────────────
 
 class TestLoudness:
     def test_silence_returns_low_lufs(self):
@@ -98,7 +96,6 @@ class TestLoudness:
         assert meter.true_peak > -2.0
 
 
-# ── Correlation Tests ───────────────────────────────────────────────────────
 
 class TestCorrelation:
     def test_identical_signals_correlation_one(self):
@@ -132,7 +129,6 @@ class TestCorrelation:
         assert "overall" in result
 
 
-# ── Filter Tests ────────────────────────────────────────────────────────────
 
 class TestFilters:
     def test_split_sums_approximately(self):
@@ -158,7 +154,6 @@ class TestFilters:
         assert np.max(np.abs(low)) < 0.2
 
 
-# ── Acceleration Tests ──────────────────────────────────────────────────────
 
 class TestAcceleration:
     def test_prepare_oscilloscope_trace_shape_and_coords(self):
@@ -194,5 +189,4 @@ class TestAcceleration:
         tp_acc = accel.calculate_true_peak(sig)
         tp_py = accel._calculate_true_peak_py(sig)
         np.testing.assert_allclose(tp_acc, tp_py, atol=0.2)
-
 

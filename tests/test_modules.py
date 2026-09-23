@@ -8,6 +8,7 @@ from app.modules.loudness_meter import LoudnessModule
 from app.modules.vu_meter import VUMeterModule, VU_STYLE_NAMES
 from app.modules.oscilloscope import OscilloscopeModule
 from app.modules.spectrogram import SpectrogramModule
+from app.modules.spectrum import SpectrumModule
 from app.modules.waveform import WaveformModule
 from app.modules.stereometer import StereometerModule
 from app.window_manager import MainWindow
@@ -419,3 +420,65 @@ def test_spectrogram_vertical_cache_rotates_frequency_axis():
     assert module._vertical_img.height() == module._history_len
     assert module._vertical_data.shape == (module._history_len, module._display_h, 3)
     np.testing.assert_array_equal(module._vertical_data[0, 0], [1, 2, 3])
+
+def test_oscilloscope_info_setting_and_clean_grid():
+    from PySide6.QtWidgets import QMenu
+    engine = MockEngine()
+    module = OscilloscopeModule(engine)
+    assert module._show_info is False
+
+    # Settings round-trip
+    settings = module.get_settings()
+    assert settings["show_info"] is False
+    module.apply_settings({"show_info": True})
+    assert module._show_info is True
+
+    # Clean grid update
+    module._update_grid(200, 100, False)
+    assert module._grid_pixmap is not None
+    assert module._grid_pixmap.width() == 200
+    assert module._grid_pixmap.height() == 100
+
+    # Context menu
+    menu = QMenu()
+    module.build_context_menu(menu)
+    action_texts = [a.text() for a in menu.actions()]
+    assert "Show Info Badges" in action_texts
+
+def test_stereometer_categorized_context_menu():
+    from PySide6.QtWidgets import QMenu
+    engine = MockEngine()
+    module = StereometerModule(engine)
+    menu = QMenu()
+    module.build_context_menu(menu)
+    titles = [a.text() for a in menu.actions()]
+    assert "Display Mode" in titles
+    assert "View & Guides" in titles
+    assert "Correlation" in titles
+    assert "Trace & Scaling" in titles
+
+def test_spectrogram_categorized_context_menu():
+    from PySide6.QtWidgets import QMenu
+    engine = MockEngine()
+    module = SpectrogramModule(engine)
+    menu = QMenu()
+    module.build_context_menu(menu)
+    titles = [a.text() for a in menu.actions()]
+    assert "Orientation" in titles
+    assert "Display & Overlays" in titles
+    assert "FFT & Resolution" in titles
+    assert "Tuning & Response" in titles
+
+def test_spectrum_categorized_context_menu():
+    from PySide6.QtWidgets import QMenu
+    engine = MockEngine()
+    module = SpectrumModule(engine)
+    menu = QMenu()
+    module.build_context_menu(menu)
+    titles = [a.text() for a in menu.actions()]
+    assert "Channel" in titles
+    assert "Orientation" in titles
+    assert "Mode" in titles
+    assert "Display & Notes" in titles
+    assert "FFT & Response" in titles
+

@@ -15,7 +15,7 @@ from app.dsp import accel as dsp_accel
 
 
 
-@register_module("spectrogram", "Spectrogram")
+@register_module("spectrogram", "Spectrogram", category="Spectral")
 class SpectrogramModule(BaseModule):
 
     def __init__(self, audio_engine, parent=None):
@@ -163,24 +163,7 @@ class SpectrogramModule(BaseModule):
     def build_context_menu(self, menu):
         from PySide6.QtGui import QActionGroup
         
-        fm = menu.addMenu("FFT Size")
-        fg = QActionGroup(self)
-        for f in [1024, 2048, 4096, 8192]:
-            a = fm.addAction(str(f))
-            a.setCheckable(True)
-            a.setChecked(f == self._fft_size)
-            a.triggered.connect(lambda checked, t=f: self._set_fft(int(t)))
-            fg.addAction(a)
-
-        scm = menu.addMenu("Scale")
-        scg = QActionGroup(self)
-        for s in ["Mel", "Logarithmic", "Linear"]:
-            a = scm.addAction(s)
-            a.setCheckable(True)
-            a.setChecked(s.lower() == self._scale)
-            a.triggered.connect(lambda checked, t=s: setattr(self, "_scale", t.lower()))
-            scg.addAction(a)
-            
+        # Orientation
         om = menu.addMenu("Orientation")
         og = QActionGroup(self)
         for o in ["Horizontal", "Vertical"]:
@@ -189,17 +172,10 @@ class SpectrogramModule(BaseModule):
             a.setChecked(o == self._orientation)
             a.triggered.connect(lambda checked, t=o: setattr(self, "_orientation", t))
             og.addAction(a)
-            
-        mm = menu.addMenu("Mode")
-        mg = QActionGroup(self)
-        for m in ["Sharper", "Sharp", "Classic"]:
-            a = mm.addAction(m)
-            a.setCheckable(True)
-            a.setChecked(m == self._mode)
-            a.triggered.connect(lambda checked, t=m: setattr(self, "_mode", t))
-            mg.addAction(a)
 
-        cm = menu.addMenu("Colormap")
+        # Display & Overlays
+        dom = menu.addMenu("Display & Overlays")
+        cm = dom.addMenu("Colormap")
         cg = QActionGroup(self)
         for c in ["Theme", "Black-Blue-Red"]:
             a = cm.addAction(c)
@@ -208,26 +184,49 @@ class SpectrogramModule(BaseModule):
             a.triggered.connect(lambda checked, t=c: self._set_colormap(t))
             cg.addAction(a)
 
-        tm = menu.addMenu("Tilt")
-        tg = QActionGroup(self)
-        for t in [-20, -10, 0, 10, 20]:
-            a = tm.addAction(str(t))
+        dom.addSeparator()
+        a_piano = dom.addAction("Piano Overlay")
+        a_piano.setCheckable(True)
+        a_piano.setChecked(self._show_piano)
+        a_piano.triggered.connect(lambda checked: setattr(self, "_show_piano", checked))
+
+        a_freq = dom.addAction("Frequency Lines")
+        a_freq.setCheckable(True)
+        a_freq.setChecked(self._show_freq)
+        a_freq.triggered.connect(lambda checked: setattr(self, "_show_freq", checked))
+
+        # FFT & Resolution
+        res_m = menu.addMenu("FFT & Resolution")
+        fm = res_m.addMenu("FFT Size")
+        fg = QActionGroup(self)
+        for f in [1024, 2048, 4096, 8192]:
+            a = fm.addAction(str(f))
             a.setCheckable(True)
-            a.setChecked(abs(t - self._tilt) < 0.1)
-            a.triggered.connect(lambda checked, v=t: setattr(self, "_tilt", float(v)))
-            tg.addAction(a)
+            a.setChecked(f == self._fft_size)
+            a.triggered.connect(lambda checked, t=f: self._set_fft(int(t)))
+            fg.addAction(a)
 
-        a = menu.addAction("Piano Overlay")
-        a.setCheckable(True)
-        a.setChecked(self._show_piano)
-        a.triggered.connect(lambda checked: setattr(self, "_show_piano", checked))
+        scm = res_m.addMenu("Scale")
+        scg = QActionGroup(self)
+        for s in ["Mel", "Logarithmic", "Linear"]:
+            a = scm.addAction(s)
+            a.setCheckable(True)
+            a.setChecked(s.lower() == self._scale)
+            a.triggered.connect(lambda checked, t=s: setattr(self, "_scale", t.lower()))
+            scg.addAction(a)
 
-        a = menu.addAction("Frequency Lines")
-        a.setCheckable(True)
-        a.setChecked(self._show_freq)
-        a.triggered.connect(lambda checked: setattr(self, "_show_freq", checked))
-        
-        sm = menu.addMenu("Speed")
+        mm = res_m.addMenu("Mode")
+        mg = QActionGroup(self)
+        for m in ["Sharper", "Sharp", "Classic"]:
+            a = mm.addAction(m)
+            a.setCheckable(True)
+            a.setChecked(m == self._mode)
+            a.triggered.connect(lambda checked, t=m: setattr(self, "_mode", t))
+            mg.addAction(a)
+
+        # Tuning & Response
+        tm_sub = menu.addMenu("Tuning & Response")
+        sm = tm_sub.addMenu("Speed")
         sg = QActionGroup(self)
         for s in [1, 2, 4, 8]:
             a = sm.addAction(f"{s}x")
@@ -235,9 +234,8 @@ class SpectrogramModule(BaseModule):
             a.setChecked(int(self._speed) == s)
             a.triggered.connect(lambda checked, v=s: setattr(self, "_speed", float(v)))
             sg.addAction(a)
-            
-        menu.addSeparator()
-        flm = menu.addMenu("Floor (Sensitivity)")
+
+        flm = tm_sub.addMenu("Floor (Sensitivity)")
         flg = QActionGroup(self)
         for f in [-120, -90, -70, -50]:
             a = flm.addAction(f"{f} dB")
@@ -245,6 +243,15 @@ class SpectrogramModule(BaseModule):
             a.setChecked(int(self._db_floor) == f)
             a.triggered.connect(lambda checked, v=f: setattr(self, "_db_floor", float(v)))
             flg.addAction(a)
+
+        tm = tm_sub.addMenu("Tilt")
+        tg = QActionGroup(self)
+        for t in [-20, -10, 0, 10, 20]:
+            a = tm.addAction(str(t))
+            a.setCheckable(True)
+            a.setChecked(abs(t - self._tilt) < 0.1)
+            a.triggered.connect(lambda checked, v=t: setattr(self, "_tilt", float(v)))
+            tg.addAction(a)
 
     def _set_fft(self, size):
         self._fft_size = size

@@ -10,7 +10,6 @@ compiled native extension.
 import numpy as np
 import logging
 
-# ── Try to import the Rust accelerator ──────────────────────────────────────
 
 _HAS_NATIVE = False
 try:
@@ -27,7 +26,6 @@ def is_accelerated() -> bool:
     return _HAS_NATIVE
 
 
-# ── Colormap ────────────────────────────────────────────────────────────────
 
 def build_colormap(stops, n=256):
     """Build a 256-entry RGB LUT from heatmap stops.
@@ -84,7 +82,6 @@ def apply_colormap(history, lut, buffer_data, start_col, end_col, history_len):
         buffer_data[:, col] = rgb_col[::-1]
 
 
-# ── Spectrogram Column ──────────────────────────────────────────────────────
 
 def generate_spectrogram_column(norm, px_int, n_bins, display_h):
     """Generate a spectrogram column from normalized FFT data.
@@ -109,7 +106,6 @@ def generate_spectrogram_column(norm, px_int, n_bins, display_h):
     return column
 
 
-# ── Circular Buffer ─────────────────────────────────────────────────────────
 
 def circular_buffer_write(buffer, raw_buffer, filtered, raw_data, buf_pos):
     """Write filtered + raw data into circular buffers.
@@ -144,7 +140,6 @@ def circular_buffer_write(buffer, raw_buffer, filtered, raw_data, buf_pos):
     return (buf_pos + n) % buf_len
 
 
-# ── Waveform Reduction ──────────────────────────────────────────────────────
 
 def waveform_reduce(data, chunk_size):
     """Reduce audio data into min/max/rms per chunk.
@@ -177,7 +172,6 @@ def waveform_reduce(data, chunk_size):
     return max_buf, min_buf, rms_buf
 
 
-# ── Correlation ─────────────────────────────────────────────────────────────
 
 def correlation(left: np.ndarray, right: np.ndarray) -> float:
     """Compute stereo correlation coefficient in [-1, +1]."""
@@ -218,7 +212,6 @@ def multiband_correlation(left: np.ndarray, right: np.ndarray, sample_rate: floa
     return results
 
 
-# ── Gain + Concatenation ───────────────────────────────────────────────────
 
 def apply_gain_and_concat(blocks, gain, target_channels=2):
     """Apply gain to audio blocks and concatenate.
@@ -253,7 +246,6 @@ def apply_gain_and_concat(blocks, gain, target_channels=2):
     return res
 
 
-# ── FFT Processing ──────────────────────────────────────────────────────────
 
 def compute_fft(data, window, fft_size):
     """Compute the magnitude spectrum of audio data.
@@ -314,7 +306,6 @@ def apply_tilt(magnitude_db, freqs, tilt_db, pivot_hz=1000.0):
     return magnitude_db + tilt_curve
 
 
-# ── Oscilloscope Trace ──────────────────────────────────────────────────────
 
 def _prepare_oscilloscope_trace_py(data: np.ndarray, display_samples: int, num_points: int,
                                    gain_mode: int, manual_gain: float, prev_gain: float):
@@ -369,7 +360,6 @@ def prepare_oscilloscope_trace(data: np.ndarray, display_samples: int, num_point
     return _prepare_oscilloscope_trace_py(data, display_samples, num_points, gain_mode, manual_gain, prev_gain)
 
 
-# ── True Peak ───────────────────────────────────────────────────────────────
 
 def _calculate_true_peak_py(data: np.ndarray) -> np.ndarray:
     was_1d = (data.ndim == 1)
@@ -407,7 +397,6 @@ def calculate_true_peak(data: np.ndarray) -> np.ndarray:
     return _calculate_true_peak_py(data)
 
 
-# ── Biquad Second-Order Sections (SOS) Filter ──────────────────────────────
 
 def _sosfilt_py(sos: np.ndarray, x: np.ndarray, zi: np.ndarray = None):
     n_sections = sos.shape[0]
@@ -449,6 +438,5 @@ def sosfilt(sos: np.ndarray, data: np.ndarray, zi: np.ndarray = None):
         f64_zi = np.ascontiguousarray(zi, dtype=np.float64) if zi is not None else None
         return _native.sosfilt(f64_sos, f64_data, f64_zi)
     return _sosfilt_py(sos, data, zi)
-
 
 

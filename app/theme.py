@@ -8,7 +8,6 @@ from PySide6.QtCore import Qt
 import re
 
 
-# ── Theme Presets ────────────────────────────────────────────────────────────
 
 THEME_PRESETS = {
     "Midnight": {
@@ -423,7 +422,6 @@ THEME_PRESETS = {
     }
 }
 
-# ── Theme Groups (for menu organization) ────────────────────────────────────
 
 THEME_GROUPS = {
     "Dark": ["Midnight", "Abyss", "Slate", "Obsidian Wave", "Ivory", "Blueprint"],
@@ -569,7 +567,6 @@ def load_custom_themes():
 load_custom_themes()
 
 
-# ── Mutable Color Palette ───────────────────────────────────────────────────
 class Colors:
     """Active color palette. Values are updated by apply_theme()."""
     BG_DARKEST = "#08080f"
@@ -683,11 +680,9 @@ def current_theme_name() -> str:
     return _current_theme
 
 
-# ── Spectrogram / Heatmap Color Maps ────────────────────────────────────────
 # (Use Colors.HEATMAP_STOPS instead)
 
 
-# ── Fonts ────────────────────────────────────────────────────────────────────
 class Fonts:
     FAMILY = "Segoe UI"
     FAMILY_MONO = "Cascadia Code"
@@ -720,7 +715,6 @@ class Fonts:
         return f
 
 
-# ── Global Stylesheet ───────────────────────────────────────────────────────
 def build_stylesheet() -> str:
     """Generate global Qt stylesheet."""
     return f"""

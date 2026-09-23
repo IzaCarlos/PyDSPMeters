@@ -378,26 +378,26 @@ class BaseModule(QWidget):
             is_vert = parent.orientation() == Qt.Vertical
 
         # Movement
-        move_menu = menu.addMenu("⇅ Move Module")
+        move_menu = menu.addMenu("Move Module")
         if is_vert:
-            up_act = move_menu.addAction("↑ Move Up")
+            up_act = move_menu.addAction("Move Up")
             up_act.triggered.connect(lambda: self.move_requested.emit(self, -1))
-            down_act = move_menu.addAction("↓ Move Down")
+            down_act = move_menu.addAction("Move Down")
             down_act.triggered.connect(lambda: self.move_requested.emit(self, 1))
         else:
-            left_act = move_menu.addAction("← Move Left")
+            left_act = move_menu.addAction("Move Left")
             left_act.triggered.connect(lambda: self.move_requested.emit(self, -1))
-            right_act = move_menu.addAction("→ Move Right")
+            right_act = move_menu.addAction("Move Right")
             right_act.triggered.connect(lambda: self.move_requested.emit(self, 1))
 
         menu.addSeparator()
-        mm_act = menu.addAction("✥ Enable Move Mode")
+        mm_act = menu.addAction("Enable Move Mode")
         mm_act.setCheckable(True)
         mm_act.setChecked(self._move_mode)
         mm_act.triggered.connect(self.set_move_mode)
         
         menu.addSeparator()
-        remove_action = menu.addAction("✕ Remove Module")
+        remove_action = menu.addAction("Remove Module")
         remove_action.triggered.connect(lambda: self.close_requested.emit(self))
         
         host = self.window()

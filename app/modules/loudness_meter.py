@@ -46,7 +46,7 @@ def _short_unit(mode, avail_w):
     return candidates[2]
 
 
-@register_module("loudness", "Loudness Meter")
+@register_module("loudness", "Loudness Meter", category="Level & Dynamics")
 class LoudnessModule(BaseModule):
 
     def __init__(self, audio_engine, parent=None):
@@ -581,7 +581,6 @@ class LoudnessModule(BaseModule):
                 painter.setFont(self.get_responsive_font(Fonts.value, bar_w, val_h, ps))
                 self.draw_text_badge(painter, QRectF(gx, bar_y + bar_h + 2, bar_w, val_h), Qt.AlignCenter, ps, ps_col)
 
-        # ── Right zone: [scale | peak_bar | badge] ──
         if self._show_follow_badge or getattr(self, "_show_scale", True):
             cur_x = start_x + n_groups * bar_w + max(0, n_groups - 1) * group_gap + (4 if n_groups else 0)
 

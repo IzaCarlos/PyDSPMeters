@@ -62,7 +62,6 @@ class AudioEngine(QObject):
         self._silence_counter = 0
         self._fallback_stream = None
 
-    # ── Device Enumeration ──────────────────────────────────────────────────
 
     @staticmethod
     def list_devices() -> list[dict]:
@@ -103,7 +102,6 @@ class AudioEngine(QObject):
         except Exception:
             return None
 
-    # ── Stream Control ──────────────────────────────────────────────────────
 
     def start(self, device_index: int | None = None, channels: int | None = None):
         """Start capturing audio from the given device."""
@@ -264,7 +262,6 @@ class AudioEngine(QObject):
     def is_running(self) -> bool:
         return self._stream is not None and self._stream.active
 
-    # ── Callbacks (run on audio thread) ─────────────────────────────────────
 
     def _audio_callback(self, indata, frames, time_info, status):
         """Sounddevice callback for stereo input."""
@@ -281,7 +278,6 @@ class AudioEngine(QObject):
         except queue.Full:
             pass
 
-    # ── Queue Drain (runs on Qt main thread) ────────────────────────────────
 
     @property
     def gain_multiplier(self):
@@ -348,7 +344,6 @@ class AudioEngine(QObject):
             perf_stats.record_count("audio.blocks_per_drain", block_count)
             perf_stats.record_count("audio.samples_per_drain", sample_count)
 
-    # ── Buffer Access ───────────────────────────────────────────────────────
 
     def get_history(self, seconds: float) -> np.ndarray:
         """
@@ -371,7 +366,6 @@ class AudioEngine(QObject):
                 self.buffer[:end],
             ])
 
-    # ── Python 3.14 Workaround Helpers ─────────────────────────────────────
 
     def _handle_silence_fallback(self, is_silent: bool, frames: int):
         """

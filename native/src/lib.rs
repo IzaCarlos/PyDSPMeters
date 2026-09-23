@@ -56,7 +56,6 @@ fn correlation_core(left: &[f32], right: &[f32]) -> f64 {
     }
 }
 
-// ── Spectrogram Colormap ────────────────────────────────────────────────────
 
 /// Apply a 256-entry RGB LUT to spectrogram history columns and write into buffer_data.
 ///
@@ -97,7 +96,6 @@ fn apply_colormap<'py>(
 }
 
 
-// ── Spectrogram Column Generation ───────────────────────────────────────────
 
 /// Generate a spectrogram column from FFT magnitude data.
 ///
@@ -179,7 +177,6 @@ fn generate_spectrogram_column<'py>(
 }
 
 
-// ── Circular Buffer Write ───────────────────────────────────────────────────
 
 /// Write filtered + raw audio data into circular buffers (for LoudnessMeter).
 ///
@@ -236,7 +233,6 @@ fn circular_buffer_write<'py>(
 }
 
 
-// ── Waveform Chunk Reduction ────────────────────────────────────────────────
 
 /// Reduce audio data into min/max/rms per chunk for waveform display.
 ///
@@ -306,7 +302,6 @@ fn waveform_reduce<'py>(
 }
 
 
-// ── Colormap Builder ────────────────────────────────────────────────────────
 
 /// Build a 256-entry RGB LUT from a list of (position, r, g, b) stops.
 ///
@@ -343,7 +338,6 @@ fn build_colormap<'py>(
 }
 
 
-// ── Stereo Correlation ──────────────────────────────────────────────────────
 
 /// Compute stereo correlation coefficient.
 /// Returns value in [-1, +1]. +1 = mono, 0 = unrelated, -1 = out of phase.
@@ -359,7 +353,6 @@ fn correlation<'py>(
 }
 
 
-// ── Audio Gain Application ──────────────────────────────────────────────────
 
 /// Apply gain multiplier to audio blocks in-place.
 /// blocks: list of (n_samples, channels) f32 arrays
@@ -408,7 +401,6 @@ fn apply_gain_and_concat<'py>(
 }
 
 
-// ── FFT Processing ──────────────────────────────────────────────────────────
 
 /// Compute the magnitude spectrum of audio data.
 /// Returns (magnitude_db)
@@ -566,7 +558,6 @@ fn multiband_correlation<'py>(
 }
 
 
-// ── Oscilloscope Trace Preparation ──────────────────────────────────────────
 
 #[pyfunction]
 fn prepare_oscilloscope_trace<'py>(
@@ -645,7 +636,6 @@ fn prepare_oscilloscope_trace<'py>(
 }
 
 
-// ── True Peak Calculation (ITU-R BS.1770-4 4x Oversampling) ─────────────────
 
 const BS1770_P1: [f64; 12] = [
     0.001708984375, -0.010986328125, 0.031494140625, -0.07177734375,
@@ -718,7 +708,6 @@ fn calculate_true_peak<'py>(
 }
 
 
-// ── Biquad Second-Order Sections (SOS) Filter ──────────────────────────────
 
 /// Apply cascaded second-order sections (biquads) in Transposed Direct Form II.
 #[pyfunction]
@@ -770,7 +759,6 @@ fn sosfilt<'py>(
 }
 
 
-// ── Module Registration ─────────────────────────────────────────────────────
 
 #[pymodule]
 fn dsp_accel(m: &Bound<'_, PyModule>) -> PyResult<()> {

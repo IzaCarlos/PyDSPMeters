@@ -537,9 +537,7 @@ def build():
 
     args = parse_args()
 
-    print(f"\n{Colors.HEADER}{Colors.BOLD}======================================{Colors.RESET}")
     print(f"{Colors.HEADER}{Colors.BOLD}   PyDSPMeters PyInstaller Builder    {Colors.RESET}")
-    print(f"{Colors.HEADER}{Colors.BOLD}======================================{Colors.RESET}\n")
 
     entry = Path(ENTRY_POINT)
     if not entry.exists():

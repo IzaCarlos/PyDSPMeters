@@ -25,7 +25,7 @@ VU_STYLE_NAMES = [
 VU_CHANNELS = ["L+R", "Left", "Right", "Mid", "Side"]
 
 
-@register_module("vu_meter", "VU Meter")
+@register_module("vu_meter", "VU Meter", category="Level & Dynamics")
 class VUMeterModule(BaseModule):
 
     def __init__(self, audio_engine, parent=None):

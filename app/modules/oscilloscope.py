@@ -12,7 +12,7 @@ from app.theme import Colors, Fonts
 from app.dsp import accel as dsp_accel
 
 
-@register_module("oscilloscope", "Oscilloscope")
+@register_module("oscilloscope", "Oscilloscope", category="Time Domain")
 class OscilloscopeModule(BaseModule):
 
     def __init__(self, audio_engine, parent=None):
@@ -27,6 +27,7 @@ class OscilloscopeModule(BaseModule):
         self._auto_gains = {}
         self._grid_pixmap = None
         self._last_grid_key = None
+        self._show_info = False
         self._sample_indices = np.arange(len(self._waveform_l), dtype=np.float32)
         self.module_key = "oscilloscope"
         super().__init__(audio_engine, title="Oscilloscope", parent=parent)
@@ -40,6 +41,7 @@ class OscilloscopeModule(BaseModule):
             "orientation": getattr(self, "_orientation", "Horizontal"),
             "gain_mode": getattr(self, "_gain_mode", "Auto Fit"),
             "manual_gain": getattr(self, "_manual_gain", 1.0),
+            "show_info": getattr(self, "_show_info", False),
         }
 
     def apply_settings(self, settings):
@@ -49,6 +51,7 @@ class OscilloscopeModule(BaseModule):
         self._orientation = settings.get("orientation", getattr(self, "_orientation", "Horizontal"))
         self._gain_mode = settings.get("gain_mode", getattr(self, "_gain_mode", "Auto Fit"))
         self._manual_gain = float(settings.get("manual_gain", getattr(self, "_manual_gain", 1.0)))
+        self._show_info = bool(settings.get("show_info", getattr(self, "_show_info", False)))
 
     def build_context_menu(self, menu):
         from PySide6.QtGui import QActionGroup
@@ -106,6 +109,12 @@ class OscilloscopeModule(BaseModule):
             a.setChecked(z == self._display_samples)
             a.triggered.connect(lambda checked, zv=z: setattr(self, "_display_samples", zv))
             zg.addAction(a)
+
+        menu.addSeparator()
+        info_act = menu.addAction("Show Info Badges")
+        info_act.setCheckable(True)
+        info_act.setChecked(getattr(self, "_show_info", False))
+        info_act.triggered.connect(lambda checked: setattr(self, "_show_info", checked))
 
     def _gain_action_checked(self, mode, gain):
         if mode != getattr(self, "_gain_mode", "Auto Fit"):
@@ -179,75 +188,46 @@ class OscilloscopeModule(BaseModule):
         painter.setRenderHint(QPainter.Antialiasing)
         
         grid_col = QColor(Colors.GRID)
-        grid_col.setAlpha(52)
+        grid_col.setAlpha(55)
         strong_col = QColor(Colors.GRID)
-        strong_col.setAlpha(130)
-        accent_dim = QColor(Colors.ACCENT_DIM)
-        accent_dim.setAlpha(24)
-
-        grad = QLinearGradient(0, 0, 0 if is_vert else w, h if is_vert else 0)
-        bg_edge = QColor(Colors.ACCENT_DIM)
-        bg_edge.setAlpha(18)
-        bg_mid = QColor(Colors.ACCENT)
-        bg_mid.setAlpha(5)
-        grad.setColorAt(0.0, bg_edge)
-        grad.setColorAt(0.45, bg_mid)
-        grad.setColorAt(1.0, QColor(0, 0, 0, 0))
-        painter.fillRect(0, 0, w, h, QBrush(grad))
-
+        strong_col.setAlpha(120)
         minor_col = QColor(Colors.GRID)
-        minor_col.setAlpha(28)
+        minor_col.setAlpha(25)
+
+        # Subtle background divisions
         painter.setPen(QPen(minor_col, 1, Qt.DotLine))
-        if is_vert:
-            for i in range(1, 16):
-                painter.drawLine(0, int(h * i / 16), w, int(h * i / 16))
-                painter.drawLine(int(w * i / 16), 0, int(w * i / 16), h)
-        else:
-            for i in range(1, 16):
-                painter.drawLine(int(w * i / 16), 0, int(w * i / 16), h)
-                painter.drawLine(0, int(h * i / 16), w, int(h * i / 16))
+        num_x = 8 if w >= 80 else 4
+        num_y = 8 if h >= 80 else 4
+        for i in range(1, num_x):
+            x = int(w * i / num_x)
+            painter.drawLine(x, 0, x, h)
+        for i in range(1, num_y):
+            y = int(h * i / num_y)
+            painter.drawLine(0, y, w, y)
 
-        painter.setPen(QPen(grid_col, 0.5))
-        if is_vert:
-            painter.drawLine(int(w / 2), 0, int(w / 2), h)
-            painter.drawLine(0, int(h / 2), w, int(h / 2))
-            for i in range(1, 16):
-                f = np.sin(i / 16 * np.pi / 2)
-                x1 = int(w/2 + w/2 * f)
-                x2 = int(w/2 - w/2 * f)
-                painter.drawLine(x1, 0, x1, 4)
-                painter.drawLine(x1, h-4, x1, h)
-                painter.drawLine(x2, 0, x2, 4)
-                painter.drawLine(x2, h-4, x2, h)
-        else:
-            painter.drawLine(0, int(h / 2), w, int(h / 2))
-            painter.drawLine(int(w / 2), 0, int(w / 2), h)
-            for i in range(1, 16):
-                f = np.sin(i / 16 * np.pi / 2)
-                y1 = int(h/2 + h/2 * f)
-                y2 = int(h/2 - h/2 * f)
-                painter.drawLine(0, y1, 4, y1)
-                painter.drawLine(w-4, y1, w, y1)
-                painter.drawLine(0, y2, 4, y2)
-                painter.drawLine(w-4, y2, w, y2)
+        # Center axes
+        painter.setPen(QPen(grid_col, 0.75))
+        mid_x = int(w / 2)
+        mid_y = int(h / 2)
+        painter.drawLine(0, mid_y, w, mid_y)
+        painter.drawLine(mid_x, 0, mid_x, h)
 
-        if w >= 120 and h >= 50:
-            painter.setFont(Fonts.small())
-            painter.setPen(accent_dim)
-            fm = QFontMetrics(Fonts.small())
-            if is_vert:
-                painter.drawText(QRectF(3, 2, max(20, w - 6), fm.height() + 2), Qt.AlignLeft, "+1")
-                painter.drawText(QRectF(3, h - fm.height() - 4, max(20, w - 6), fm.height() + 2), Qt.AlignLeft, "-1")
-            else:
-                painter.drawText(QRectF(4, 2, 28, fm.height() + 2), Qt.AlignLeft, "+1")
-                painter.drawText(QRectF(4, h - fm.height() - 4, 28, fm.height() + 2), Qt.AlignLeft, "-1")
+        # Reticle ticks along center axes
+        tick_len = 3
+        for i in range(1, num_x):
+            x = int(w * i / num_x)
+            painter.drawLine(x, mid_y - tick_len, x, mid_y + tick_len)
+        for i in range(1, num_y):
+            y = int(h * i / num_y)
+            painter.drawLine(mid_x - tick_len, y, mid_x + tick_len, y)
 
+        # Scope corner brackets
         cs = 8
         painter.setPen(QPen(strong_col, 1.5))
         painter.drawLine(0, 0, cs, 0); painter.drawLine(0, 0, 0, cs) # TL
-        painter.drawLine(w, 0, w-cs, 0); painter.drawLine(w, 0, w, cs) # TR
-        painter.drawLine(0, h, cs, h); painter.drawLine(0, h, 0, h-cs) # BL
-        painter.drawLine(w, h, w-cs, h); painter.drawLine(w, h, w, h-cs) # BR
+        painter.drawLine(w, 0, w - cs, 0); painter.drawLine(w, 0, w, cs) # TR
+        painter.drawLine(0, h, cs, h); painter.drawLine(0, h, 0, h - cs) # BL
+        painter.drawLine(w, h, w - cs, h); painter.drawLine(w, h, w, h - cs) # BR
         
         painter.end()
         self._last_grid_key = (w, h, is_vert)
@@ -290,7 +270,8 @@ class OscilloscopeModule(BaseModule):
                 for idx, ch in enumerate(display_chans):
                     self._draw_trace(painter, ch, w, h, mid_y, h * 0.45, colors[idx % 2], vertical=False, trace_key=idx)
 
-        self._draw_status(painter, w, h, is_vert, len(display_chans), mode)
+        if getattr(self, "_show_info", False):
+            self._draw_status(painter, w, h, is_vert, len(display_chans), mode)
 
     def _draw_lane(self, painter, center, w, h, idx, vertical=False):
         col = QColor(Colors.GRID_BRIGHT)

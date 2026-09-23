@@ -83,3 +83,7 @@ profile_logs/
 # Temporary build files/installation media
 *.iss
 *.zip
+
+# Local agent/test artifacts
+.codex-tmp/
+multithread_plan.md

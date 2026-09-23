@@ -72,41 +72,15 @@ class SpectrumModule(BaseModule):
     def build_context_menu(self, menu):
         from PySide6.QtGui import QActionGroup
         
-        mm = menu.addMenu("Mode")
-        mg = QActionGroup(self)
-        for m in ["FFT", "Color Bars", "Both"]:
-            a = mm.addAction(m)
+        # Channel & Orientation
+        cm = menu.addMenu("Channel")
+        cg = QActionGroup(self)
+        for c in ["L+R", "Left", "Right", "Mid", "Side"]:
+            a = cm.addAction(c)
             a.setCheckable(True)
-            a.setChecked(m == self._mode)
-            a.triggered.connect(lambda checked, t=m: setattr(self, "_mode", t))
-            mg.addAction(a)
-            
-        fm = menu.addMenu("FFT Size")
-        fg = QActionGroup(self)
-        for f in [1024, 2048, 4096, 8192, 16384, 32768]:
-            a = fm.addAction(str(f))
-            a.setCheckable(True)
-            a.setChecked(f == self._fft_size)
-            a.triggered.connect(lambda checked, t=f: self._set_fft_size(int(t)))
-            fg.addAction(a)
-            
-        sm_speed = menu.addMenu("Speed")
-        sg_speed = QActionGroup(self)
-        for s in [1, 2, 4]:
-            a = sm_speed.addAction(f"{s}x")
-            a.setCheckable(True)
-            a.setChecked(int(self._speed) == s)
-            a.triggered.connect(lambda checked, v=s: setattr(self, "_speed", float(v)))
-            sg_speed.addAction(a)
-            
-        scm = menu.addMenu("Scale")
-        scg = QActionGroup(self)
-        for s in ["Mel", "Logarithmic", "Linear"]:
-            a = scm.addAction(s)
-            a.setCheckable(True)
-            a.setChecked(s.lower() == self._scale)
-            a.triggered.connect(lambda checked, t=s: setattr(self, "_scale", t.lower()))
-            scg.addAction(a)
+            a.setChecked(c == self._channel)
+            a.triggered.connect(lambda checked, t=c: setattr(self, "_channel", t))
+            cg.addAction(a)
 
         om = menu.addMenu("Orientation")
         og = QActionGroup(self)
@@ -117,16 +91,58 @@ class SpectrumModule(BaseModule):
             a.triggered.connect(lambda checked, t=o: setattr(self, "_orientation", t))
             og.addAction(a)
 
-        cm = menu.addMenu("Channel")
-        cg = QActionGroup(self)
-        for c in ["L+R", "Left", "Right", "Mid", "Side"]:
-            a = cm.addAction(c)
+        mm = menu.addMenu("Mode")
+        mg = QActionGroup(self)
+        for m in ["FFT", "Color Bars", "Both"]:
+            a = mm.addAction(m)
             a.setCheckable(True)
-            a.setChecked(c == self._channel)
-            a.triggered.connect(lambda checked, t=c: setattr(self, "_channel", t))
-            cg.addAction(a)
+            a.setChecked(m == self._mode)
+            a.triggered.connect(lambda checked, t=m: setattr(self, "_mode", t))
+            mg.addAction(a)
 
-        sm = menu.addMenu("Smoothing")
+        # Display & Notes
+        dnm = menu.addMenu("Display & Notes")
+        a_note = dnm.addAction("dB/Hz/Note Info")
+        a_note.setCheckable(True)
+        a_note.setChecked(self._show_note)
+        a_note.triggered.connect(lambda checked: setattr(self, "_show_note", checked))
+
+        a_fp = dnm.addAction("Floating Note Peak")
+        a_fp.setCheckable(True)
+        a_fp.setChecked(self._show_floating_note)
+        a_fp.setEnabled(self._show_note)
+        a_fp.triggered.connect(lambda checked: setattr(self, "_show_floating_note", checked))
+
+        # FFT & Response
+        frm = menu.addMenu("FFT & Response")
+        fm = frm.addMenu("FFT Size")
+        fg = QActionGroup(self)
+        for f in [1024, 2048, 4096, 8192, 16384, 32768]:
+            a = fm.addAction(str(f))
+            a.setCheckable(True)
+            a.setChecked(f == self._fft_size)
+            a.triggered.connect(lambda checked, t=f: self._set_fft_size(int(t)))
+            fg.addAction(a)
+
+        scm = frm.addMenu("Scale")
+        scg = QActionGroup(self)
+        for s in ["Mel", "Logarithmic", "Linear"]:
+            a = scm.addAction(s)
+            a.setCheckable(True)
+            a.setChecked(s.lower() == self._scale)
+            a.triggered.connect(lambda checked, t=s: setattr(self, "_scale", t.lower()))
+            scg.addAction(a)
+
+        sm_speed = frm.addMenu("Speed")
+        sg_speed = QActionGroup(self)
+        for s in [1, 2, 4]:
+            a = sm_speed.addAction(f"{s}x")
+            a.setCheckable(True)
+            a.setChecked(int(self._speed) == s)
+            a.triggered.connect(lambda checked, v=s: setattr(self, "_speed", float(v)))
+            sg_speed.addAction(a)
+
+        sm = frm.addMenu("Smoothing")
         sg = QActionGroup(self)
         for sm_val in [0, 50, 75, 85, 95, 98, 99]:
             a = sm.addAction(f"{sm_val}%")
@@ -134,8 +150,8 @@ class SpectrumModule(BaseModule):
             a.setChecked(abs(sm_val/100.0 - self._smoothing) < 0.01)
             a.triggered.connect(lambda checked, v=sm_val: setattr(self, "_smoothing", v / 100.0))
             sg.addAction(a)
-            
-        tm = menu.addMenu("Slope (Tilt)")
+
+        tm = frm.addMenu("Slope (Tilt)")
         tg = QActionGroup(self)
         for t_val in [-6.0, -4.5, -3.0, -1.5, 0.0, 1.5, 3.0, 4.5, 6.0]:
             a = tm.addAction(f"{t_val:g} dB/oct")
@@ -143,17 +159,6 @@ class SpectrumModule(BaseModule):
             a.setChecked(abs(t_val - self._tilt) < 0.1)
             a.triggered.connect(lambda checked, v=t_val: setattr(self, "_tilt", v))
             tg.addAction(a)
-
-        a = menu.addAction("dB/Hz/Note Info")
-        a.setCheckable(True)
-        a.setChecked(self._show_note)
-        a.triggered.connect(lambda checked: setattr(self, "_show_note", checked))
-
-        a = menu.addAction("Floating Note Peak")
-        a.setCheckable(True)
-        a.setChecked(self._show_floating_note)
-        a.setEnabled(self._show_note)
-        a.triggered.connect(lambda checked: setattr(self, "_show_floating_note", checked))
 
     def _set_fft_size(self, size):
         self._fft_size = size

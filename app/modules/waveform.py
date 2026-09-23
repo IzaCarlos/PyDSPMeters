@@ -13,7 +13,7 @@ from app.dsp.filters import MultiBandFilter
 from app.dsp import accel as dsp_accel
 
 
-@register_module("waveform", "Waveform")
+@register_module("waveform", "Waveform", category="Time Domain")
 class WaveformModule(BaseModule):
 
     def __init__(self, audio_engine, parent=None):

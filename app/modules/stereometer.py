@@ -28,7 +28,7 @@ def _tukey_window(n: int, alpha: float = 0.5) -> np.ndarray:
     return w.astype(np.float32)
 
 
-@register_module("stereometer", "Stereometer")
+@register_module("stereometer", "Stereometer", category="Stereo & Phase")
 class StereometerModule(BaseModule):
 
     def __init__(self, audio_engine, parent=None):
@@ -118,6 +118,7 @@ class StereometerModule(BaseModule):
     def build_context_menu(self, menu):
         from PySide6.QtGui import QActionGroup
         
+        # Display Mode
         dm = menu.addMenu("Display Mode")
         dg = QActionGroup(self)
         for d in ["Vectorscope", "Lissajous", "XY Oscilloscope"]:
@@ -127,7 +128,9 @@ class StereometerModule(BaseModule):
             a.triggered.connect(lambda checked, t=d: setattr(self, "_display_mode", t))
             dg.addAction(a)
 
-        gm = menu.addMenu("Guide Map")
+        # View & Guides
+        vm = menu.addMenu("View & Guides")
+        gm = vm.addMenu("Guide Map")
         gg = QActionGroup(self)
         for g in ["None", "Rhombus", "Circle", "Square"]:
             a = gm.addAction(g)
@@ -136,7 +139,7 @@ class StereometerModule(BaseModule):
             a.triggered.connect(lambda checked, t=g: setattr(self, "_guide_mode", t))
             gg.addAction(a)
 
-        rm = menu.addMenu("Rotation")
+        rm = vm.addMenu("Rotation")
         rg = QActionGroup(self)
         for r in range(-180, 181, 45):
             label = f"{r}°" if r == 0 else (f"+{r}°" if r > 0 else f"{r}°")
@@ -145,10 +148,57 @@ class StereometerModule(BaseModule):
             a.setChecked(r == self._rotation)
             a.triggered.connect(lambda checked, v=r: (setattr(self, "_rotation", v), self.canvas.update()))
             rg.addAction(a)
-            
         rm.setEnabled(not self._halved_view)
 
-        zm = menu.addMenu("Zoom")
+        vm.addSeparator()
+        a_min = vm.addAction("Minimal Mode")
+        a_min.setCheckable(True)
+        a_min.setChecked(self._minimal_mode)
+        a_min.triggered.connect(lambda checked: (setattr(self, "_minimal_mode", checked), self.canvas.update()))
+
+        a_lbl = vm.addAction("Show Labels")
+        a_lbl.setCheckable(True)
+        a_lbl.setChecked(self._show_labels)
+        a_lbl.triggered.connect(lambda checked: (setattr(self, "_show_labels", checked), self.canvas.update()))
+
+        a_hlv = vm.addAction("Halved View")
+        a_hlv.setCheckable(True)
+        a_hlv.setChecked(self._halved_view)
+        a_hlv.triggered.connect(lambda checked: (setattr(self, "_halved_view", checked), self.canvas.update()))
+
+        # Correlation
+        crm_menu = menu.addMenu("Correlation")
+        crg = QActionGroup(self)
+        for c in ["Single-Band", "Multi-Band"]:
+            a = crm_menu.addAction(c)
+            a.setCheckable(True)
+            a.setChecked(c == self._corr_mode)
+            a.triggered.connect(lambda checked, t=c: setattr(self, "_corr_mode", t))
+            crg.addAction(a)
+
+        crm_menu.addSeparator()
+        cpm = crm_menu.addMenu("Position")
+        cpg = QActionGroup(self)
+        for p in ["Top", "Bottom", "Left", "Right"]:
+            a = cpm.addAction(p)
+            a.setCheckable(True)
+            a.setChecked(p == self._corr_pos)
+            a.triggered.connect(lambda checked, t=p: setattr(self, "_corr_pos", t))
+            cpg.addAction(a)
+        cpm.setEnabled(not self._minimal_mode)
+
+        pm = crm_menu.addMenu("Smoothing")
+        pg = QActionGroup(self)
+        for p, label in [(0.0, "None (Fast)"), (0.5, "Natural"), (0.8, "Smooth"), (0.95, "Slow")]:
+            a = pm.addAction(label)
+            a.setCheckable(True)
+            a.setChecked(abs(p - self._persistence) < 0.01)
+            a.triggered.connect(lambda checked, v=p: (setattr(self, "_persistence", v), self.canvas.update()))
+            pg.addAction(a)
+
+        # Trace & Scaling
+        tm_sub = menu.addMenu("Trace & Scaling")
+        zm = tm_sub.addMenu("Zoom")
         zg = QActionGroup(self)
         auto_zoom = zm.addAction("Auto")
         auto_zoom.setCheckable(True)
@@ -162,16 +212,7 @@ class StereometerModule(BaseModule):
             a.triggered.connect(lambda checked, v=z: self._set_manual_zoom(v))
             zg.addAction(a)
 
-        tm = menu.addMenu("Trace Style")
-        tg = QActionGroup(self)
-        for style in ["Persistence", "Instant"]:
-            a = tm.addAction(style)
-            a.setCheckable(True)
-            a.setChecked(style == self._trace_style)
-            a.triggered.connect(lambda checked, v=style: self._set_trace_style(v))
-            tg.addAction(a)
-
-        wm = menu.addMenu("Width Gain")
+        wm = tm_sub.addMenu("Width Gain")
         wg = QActionGroup(self)
         for w in [1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0]:
             a = wm.addAction(f"{w}x")
@@ -180,16 +221,16 @@ class StereometerModule(BaseModule):
             a.triggered.connect(lambda checked, v=w: (setattr(self, "_width_gain", v), self.canvas.update()))
             wg.addAction(a)
 
-        pm = menu.addMenu("Correlation Smoothing")
-        pg = QActionGroup(self)
-        for p, label in [(0.0, "None (Fast)"), (0.5, "Natural"), (0.8, "Smooth"), (0.95, "Slow")]:
-            a = pm.addAction(label)
+        tm = tm_sub.addMenu("Trace Style")
+        tg = QActionGroup(self)
+        for style in ["Persistence", "Instant"]:
+            a = tm.addAction(style)
             a.setCheckable(True)
-            a.setChecked(abs(p - self._persistence) < 0.01)
-            a.triggered.connect(lambda checked, v=p: (setattr(self, "_persistence", v), self.canvas.update()))
-            pg.addAction(a)
-            
-        sm = menu.addMenu("Max Dots (Density)")
+            a.setChecked(style == self._trace_style)
+            a.triggered.connect(lambda checked, v=style: self._set_trace_style(v))
+            tg.addAction(a)
+
+        sm = tm_sub.addMenu("Max Dots (Density)")
         sg = QActionGroup(self)
         for d in [256, 512, 1024, 2048, 4096, 8192]:
             a = sm.addAction(str(d))
@@ -198,7 +239,7 @@ class StereometerModule(BaseModule):
             a.triggered.connect(lambda checked, v=d: (setattr(self, "_max_dots", v), self.canvas.update()))
             sg.addAction(a)
 
-        cm = menu.addMenu("Color")
+        cm = tm_sub.addMenu("Color")
         cg = QActionGroup(self)
         for c in ["Static", "Multi-Band", "Multi-Band (RGB)"]:
             a = cm.addAction(c)
@@ -206,42 +247,6 @@ class StereometerModule(BaseModule):
             a.setChecked(c == self._color_mode)
             a.triggered.connect(lambda checked, t=c: setattr(self, "_color_mode", t))
             cg.addAction(a)
-
-        crm = menu.addMenu("Correlation")
-        crg = QActionGroup(self)
-        for c in ["Single-Band", "Multi-Band"]:
-            a = crm.addAction(c)
-            a.setCheckable(True)
-            a.setChecked(c == self._corr_mode)
-            a.triggered.connect(lambda checked, t=c: setattr(self, "_corr_mode", t))
-            crg.addAction(a)
-            
-        cpm = menu.addMenu("Correlation Position")
-        cpg = QActionGroup(self)
-        for p in ["Top", "Bottom", "Left", "Right"]:
-            a = cpm.addAction(p)
-            a.setCheckable(True)
-            a.setChecked(p == self._corr_pos)
-            a.triggered.connect(lambda checked, t=p: setattr(self, "_corr_pos", t))
-            cpg.addAction(a)
-            
-        cpm.setEnabled(not self._minimal_mode)
-        crm.setEnabled(not self._minimal_mode)
-            
-        a = menu.addAction("Minimal Mode")
-        a.setCheckable(True)
-        a.setChecked(self._minimal_mode)
-        a.triggered.connect(lambda checked: (setattr(self, "_minimal_mode", checked), self.canvas.update()))
-
-        a = menu.addAction("Show Labels")
-        a.setCheckable(True)
-        a.setChecked(self._show_labels)
-        a.triggered.connect(lambda checked: (setattr(self, "_show_labels", checked), self.canvas.update()))
-
-        a = menu.addAction("Halved View")
-        a.setCheckable(True)
-        a.setChecked(self._halved_view)
-        a.triggered.connect(lambda checked: (setattr(self, "_halved_view", checked), self.canvas.update()))
 
     def _set_auto_zoom(self, enabled):
         self._auto_zoom = bool(enabled)

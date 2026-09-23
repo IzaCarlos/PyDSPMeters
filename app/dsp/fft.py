@@ -61,7 +61,6 @@ def fft_frequencies(fft_size: int, sample_rate: float) -> np.ndarray:
     return np.fft.rfftfreq(fft_size, d=1.0 / sample_rate)
 
 
-# ── Frequency Scale Mappings ────────────────────────────────────────────────
 
 def hz_to_mel(hz: np.ndarray) -> np.ndarray:
     """Convert Hz to Mel scale."""
