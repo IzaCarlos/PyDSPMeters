@@ -418,6 +418,32 @@ def test_appbar_fullscreen_callback_restores_with_forced_repair():
     assert dummy.repair_calls == [(1200, True)]
     assert not dummy._appbar_fullscreen_active
 
+
+def test_appbar_fullscreen_callback_immunity_prevents_forced_repair():
+    class DummyWindow:
+        def __init__(self):
+            self._appbar_fullscreen_active = False
+            self._appbar_ignore_screenshot_resets = True
+            self.topmost_calls = []
+            self.repair_calls = []
+
+        def _set_appbar_topmost(self, enabled):
+            self.topmost_calls.append(enabled)
+
+        def _schedule_appbar_repair(self, delay=250, force_register=False):
+            self.repair_calls.append((delay, force_register))
+
+    dummy = DummyWindow()
+
+    MainWindow._handle_appbar_callback(dummy, 2, 1)
+    MainWindow._handle_appbar_callback(dummy, 2, 0)
+
+    # Topmost toggled on entry and exit, but repair calls suppressed completely!
+    assert dummy.topmost_calls == [False, True]
+    assert dummy.repair_calls == []
+    assert not dummy._appbar_fullscreen_active
+
+
 def test_appbar_geometry_health_detects_moved_window():
     class DummyWindow:
         def __init__(self):

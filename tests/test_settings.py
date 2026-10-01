@@ -78,3 +78,20 @@ def test_save_and_load_profile_file(tmp_path):
 
     assert profile_file.exists()
     assert SettingsManager.load_from_file(profile_file) == settings
+
+
+def test_appbar_screenshot_immunity_setting(tmp_path, monkeypatch):
+    test_file = tmp_path / "settings_immunity.json"
+    monkeypatch.setattr(SettingsManager, "get_settings_path", lambda: str(test_file))
+
+    settings = {
+        "window": {
+            "appbar_active": True,
+            "appbar_edge": "right",
+            "appbar_ignore_screenshot_resets": True
+        }
+    }
+    SettingsManager.save(settings)
+    loaded = SettingsManager.load()
+    assert loaded["window"]["appbar_ignore_screenshot_resets"] is True
+

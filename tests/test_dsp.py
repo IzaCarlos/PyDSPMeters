@@ -190,3 +190,26 @@ class TestAcceleration:
         tp_py = accel._calculate_true_peak_py(sig)
         np.testing.assert_allclose(tp_acc, tp_py, atol=0.2)
 
+    def test_render_oscilloscope_rgba(self):
+        from app.dsp import accel
+        buf = np.zeros((100, 100, 4), dtype=np.uint8)
+        samples = np.sin(np.linspace(0, 2 * np.pi, 64, dtype=np.float32))
+        ok = accel.render_oscilloscope_rgba(buf, samples, 50.0, 30.0, False, True, 255, 128, 0, 240)
+        if accel.is_accelerated():
+            assert ok is True
+            assert np.count_nonzero(buf) > 0
+
+    def test_render_stereometer_rgba(self):
+        from app.dsp import accel
+        buf = np.zeros((120, 120, 4), dtype=np.uint8)
+        left = np.random.randn(256).astype(np.float32) * 0.5
+        right = np.random.randn(256).astype(np.float32) * 0.5
+        ok = accel.render_stereometer_rgba(
+            buf, left, right, 60.0, 60.0, 50.0, 1.0, 0.5,
+            0, 0, 128, 0, 255, 128, 220
+        )
+        if accel.is_accelerated():
+            assert ok is True
+            assert np.count_nonzero(buf) > 0
+
+

@@ -759,6 +759,222 @@ fn sosfilt<'py>(
 }
 
 
+/// Render stereometer point cloud directly into an RGBA (h, w, 4) uint8 buffer.
+/// Fast SIMD persistence decay and dot plotting.
+#[pyfunction]
+fn render_stereometer_rgba<'py>(
+    _py: Python<'py>,
+    buffer: &Bound<'py, PyArray3<u8>>,
+    left: PyReadonlyArray1<'py, f32>,
+    right: PyReadonlyArray1<'py, f32>,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    zoom: f32,
+    persistence: f32,
+    display_mode: usize,
+    guide_mode: usize,
+    max_dots: usize,
+    r: u8,
+    g: u8,
+    b: u8,
+    alpha: u8,
+) -> PyResult<()> {
+    let mut buf = unsafe { buffer.as_array_mut() };
+    let h = buf.shape()[0];
+    let w = buf.shape()[1];
+    if h == 0 || w == 0 {
+        return Ok(());
+    }
+
+    // 1. Persistence decay across the buffer
+    if persistence > 0.01 {
+        let mult = ((persistence.min(0.99)) * 256.0) as u16;
+        for y in 0..h {
+            for x in 0..w {
+                let a = buf[[y, x, 3]];
+                if a > 0 {
+                    buf[[y, x, 0]] = ((buf[[y, x, 0]] as u16 * mult) >> 8) as u8;
+                    buf[[y, x, 1]] = ((buf[[y, x, 1]] as u16 * mult) >> 8) as u8;
+                    buf[[y, x, 2]] = ((buf[[y, x, 2]] as u16 * mult) >> 8) as u8;
+                    buf[[y, x, 3]] = ((a as u16 * mult) >> 8) as u8;
+                }
+            }
+        }
+    } else {
+        buf.fill(0);
+    }
+
+    // 2. Subsample audio and compute coordinates
+    let l_in = left.as_array();
+    let r_in = right.as_array();
+    let n = l_in.len().min(r_in.len());
+    if n == 0 {
+        return Ok(());
+    }
+
+    let step = (n / max_dots.max(1)).max(1);
+    let bloom = max_dots <= 1024;
+    let bloom_alpha = (alpha as u16 * 90 / 255) as u8;
+
+    for i in (0..n).step_by(step) {
+        let mut dx;
+        let mut dy;
+
+        if display_mode == 3 {
+            // XY Oscilloscope
+            dx = l_in[i] * zoom;
+            dy = r_in[i] * zoom;
+            if guide_mode == 1 {
+                let mag = (dx * dx + dy * dy).sqrt();
+                if mag > 1.0 { dx /= mag; dy /= mag; }
+            } else if guide_mode == 2 {
+                let mag = dx.abs().max(dy.abs());
+                if mag > 1.0 { dx /= mag; dy /= mag; }
+            }
+        } else {
+            // M/S Vectorscope modes
+            dx = (r_in[i] - l_in[i]) * 0.5 * zoom;
+            dy = (l_in[i] + r_in[i]) * 0.5 * zoom;
+
+            if display_mode == 1 {
+                // Scaled (polar expansion)
+                let mag = (dx * dx + dy * dy).sqrt();
+                let mag_safe = mag.max(1e-7);
+                let scale = mag_safe.powf(0.8) / mag_safe;
+                dx *= scale;
+                dy *= scale;
+            }
+
+            if guide_mode == 1 {
+                let mag = (dx * dx + dy * dy).sqrt();
+                if mag > 1.0 { dx /= mag; dy /= mag; }
+            } else if guide_mode == 2 {
+                let mag = dx.abs().max(dy.abs());
+                if mag > 1.0 { dx /= mag; dy /= mag; }
+            } else {
+                let mag = dx.abs() + dy.abs();
+                if mag > 1.0 { dx /= mag; dy /= mag; }
+            }
+        }
+
+        let px = (cx + dx * radius).round() as i32;
+        let py = (cy - dy * radius).round() as i32;
+
+        if px >= 0 && px < w as i32 && py >= 0 && py < h as i32 {
+            let ux = px as usize;
+            let uy = py as usize;
+            buf[[uy, ux, 0]] = r;
+            buf[[uy, ux, 1]] = g;
+            buf[[uy, ux, 2]] = b;
+            buf[[uy, ux, 3]] = alpha.max(buf[[uy, ux, 3]]);
+
+            if bloom {
+                if px > 0 {
+                    let lx = ux - 1;
+                    buf[[uy, lx, 0]] = r; buf[[uy, lx, 1]] = g; buf[[uy, lx, 2]] = b;
+                    buf[[uy, lx, 3]] = bloom_alpha.max(buf[[uy, lx, 3]]);
+                }
+                if px + 1 < w as i32 {
+                    let rx = ux + 1;
+                    buf[[uy, rx, 0]] = r; buf[[uy, rx, 1]] = g; buf[[uy, rx, 2]] = b;
+                    buf[[uy, rx, 3]] = bloom_alpha.max(buf[[uy, rx, 3]]);
+                }
+                if py > 0 {
+                    let ty = uy - 1;
+                    buf[[ty, ux, 0]] = r; buf[[ty, ux, 1]] = g; buf[[ty, ux, 2]] = b;
+                    buf[[ty, ux, 3]] = bloom_alpha.max(buf[[ty, ux, 3]]);
+                }
+                if py + 1 < h as i32 {
+                    let by = uy + 1;
+                    buf[[by, ux, 0]] = r; buf[[by, ux, 1]] = g; buf[[by, ux, 2]] = b;
+                    buf[[by, ux, 3]] = bloom_alpha.max(buf[[by, ux, 3]]);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+
+/// Render oscilloscope trace directly into an RGBA (h, w, 4) uint8 buffer.
+#[pyfunction]
+fn render_oscilloscope_rgba<'py>(
+    _py: Python<'py>,
+    buffer: &Bound<'py, PyArray3<u8>>,
+    samples: PyReadonlyArray1<'py, f32>,
+    center: f32,
+    factor: f32,
+    vertical: bool,
+    clear: bool,
+    r: u8,
+    g: u8,
+    b: u8,
+    alpha: u8,
+) -> PyResult<()> {
+    let mut buf = unsafe { buffer.as_array_mut() };
+    let h = buf.shape()[0];
+    let w = buf.shape()[1];
+    if h == 0 || w == 0 {
+        return Ok(());
+    }
+
+    if clear {
+        buf.fill(0);
+    }
+
+    let smp = samples.as_array();
+    let n = smp.len();
+    if n < 2 {
+        return Ok(());
+    }
+
+    let long_axis = if vertical { h as f32 } else { w as f32 };
+    let step_t = long_axis / (n - 1) as f32;
+
+    for i in 0..(n - 1) {
+        let t0 = i as f32 * step_t;
+        let t1 = (i + 1) as f32 * step_t;
+        let v0 = center - smp[i] * factor;
+        let v1 = center - smp[i + 1] * factor;
+
+        let (x0, y0, x1, y1) = if vertical {
+            (v0, t0, v1, t1)
+        } else {
+            (t0, v0, t1, v1)
+        };
+
+        let dx = x1 - x0;
+        let dy = y1 - y0;
+        let steps = (dx.abs().max(dy.abs()).ceil() as usize).max(1);
+        let x_inc = dx / steps as f32;
+        let y_inc = dy / steps as f32;
+
+        let mut cur_x = x0;
+        let mut cur_y = y0;
+
+        for _ in 0..=steps {
+            let px = cur_x.round() as i32;
+            let py = cur_y.round() as i32;
+
+            if px >= 0 && px < w as i32 && py >= 0 && py < h as i32 {
+                let ux = px as usize;
+                let uy = py as usize;
+                buf[[uy, ux, 0]] = r;
+                buf[[uy, ux, 1]] = g;
+                buf[[uy, ux, 2]] = b;
+                buf[[uy, ux, 3]] = alpha.max(buf[[uy, ux, 3]]);
+            }
+
+            cur_x += x_inc;
+            cur_y += y_inc;
+        }
+    }
+
+    Ok(())
+}
+
 
 #[pymodule]
 fn dsp_accel(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -775,6 +991,8 @@ fn dsp_accel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(prepare_oscilloscope_trace, m)?)?;
     m.add_function(wrap_pyfunction!(calculate_true_peak, m)?)?;
     m.add_function(wrap_pyfunction!(sosfilt, m)?)?;
+    m.add_function(wrap_pyfunction!(render_stereometer_rgba, m)?)?;
+    m.add_function(wrap_pyfunction!(render_oscilloscope_rgba, m)?)?;
     Ok(())
 }
 

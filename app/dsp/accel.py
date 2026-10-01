@@ -440,3 +440,35 @@ def sosfilt(sos: np.ndarray, data: np.ndarray, zi: np.ndarray = None):
     return _sosfilt_py(sos, data, zi)
 
 
+def render_stereometer_rgba(buffer: np.ndarray, left: np.ndarray, right: np.ndarray,
+                            cx: float, cy: float, radius: float, zoom: float, persistence: float,
+                            display_mode: int, guide_mode: int, max_dots: int,
+                            r: int, g: int, b: int, alpha: int) -> bool:
+    """Render stereometer point cloud directly into an RGBA (h, w, 4) uint8 buffer."""
+    if _HAS_NATIVE and hasattr(_native, "render_stereometer_rgba"):
+        l_f32 = np.ascontiguousarray(left, dtype=np.float32)
+        r_f32 = np.ascontiguousarray(right, dtype=np.float32)
+        _native.render_stereometer_rgba(
+            buffer, l_f32, r_f32, float(cx), float(cy), float(radius), float(zoom),
+            float(persistence), int(display_mode), int(guide_mode), int(max_dots),
+            int(r), int(g), int(b), int(alpha)
+        )
+        return True
+    return False
+
+
+def render_oscilloscope_rgba(buffer: np.ndarray, samples: np.ndarray,
+                             center: float, factor: float, vertical: bool, clear: bool,
+                             r: int, g: int, b: int, alpha: int) -> bool:
+    """Render oscilloscope trace directly into an RGBA (h, w, 4) uint8 buffer."""
+    if _HAS_NATIVE and hasattr(_native, "render_oscilloscope_rgba"):
+        s_f32 = np.ascontiguousarray(samples, dtype=np.float32)
+        _native.render_oscilloscope_rgba(
+            buffer, s_f32, float(center), float(factor), bool(vertical), bool(clear),
+            int(r), int(g), int(b), int(alpha)
+        )
+        return True
+    return False
+
+
+

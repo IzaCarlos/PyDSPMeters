@@ -3,7 +3,7 @@ Oscilloscope Module: Real-time waveform display with zero-crossing trigger.
 """
 
 import numpy as np
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QLinearGradient, QFontMetrics
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QLinearGradient, QFontMetrics, QImage
 from PySide6.QtCore import Qt, QRectF, QPointF
 
 from app.base_module import BaseModule
@@ -383,15 +383,16 @@ class OscilloscopeModule(BaseModule):
         else:
             points = [QPointF(t_coords[i], v_coords[i]) for i in range(actual_pts)]
 
-        if actual_pts <= 280:
-            gc = QColor(color)
-            gc.setAlpha(40)
-            pen_glow = QPen(gc, 2.5)
-            pen_glow.setJoinStyle(Qt.RoundJoin)
-            painter.setPen(pen_glow)
-            painter.drawPolyline(points)
+        # Luminous bloom / glow pass
+        gc = QColor(color)
+        gc.setAlpha(45)
+        pen_glow = QPen(gc, 3.2)
+        pen_glow.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen_glow)
+        painter.drawPolyline(points)
 
-        pen_core = QPen(QColor(color), 1.5)
+        # Thick luminous core beam pass
+        pen_core = QPen(QColor(color), 1.6)
         pen_core.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen_core)
         painter.drawPolyline(points)

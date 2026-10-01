@@ -3,7 +3,7 @@ Stereometer Module: Lissajous / Linear / Scaled stereo display with correlation 
 """
 
 import numpy as np
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPixmap
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPixmap, QImage
 from PySide6.QtCore import Qt, QPointF, QRectF
 
 from app.base_module import BaseModule
@@ -11,6 +11,7 @@ from app.modules import register_module
 from app.theme import Colors, Fonts
 from app.dsp.correlation import correlation, multiband_correlation
 from app.dsp.filters import MultiBandFilter
+from app.dsp import accel as dsp_accel
 
 
 def _tukey_window(n: int, alpha: float = 0.5) -> np.ndarray:
@@ -629,7 +630,7 @@ class StereometerModule(BaseModule):
         p = QPainter(self._scope_pixmap)
         if not p.isActive():
             return
-        p.setRenderHint(QPainter.Antialiasing, False)
+        p.setRenderHint(QPainter.Antialiasing, True)
         fade_alpha = 56 if self._color_mode.startswith("Multi-Band") else 44
         fade_color = QColor(Colors.BG_MODULE)
         fade_color.setAlpha(fade_alpha)
@@ -695,12 +696,13 @@ class StereometerModule(BaseModule):
                 painter.restore()
                 return
             
-            # Draw a slight glow/blur by drawing multiple times
-            painter.setPen(QPen(QColor(color), 2.5))
-            painter.setOpacity(alpha / 255.0 * 0.3)
+            # Glowing bloom pass (soft wider halo around dots)
+            painter.setPen(QPen(QColor(color), 3.0))
+            painter.setOpacity(alpha / 255.0 * 0.35)
             painter.drawPoints(points)
             
-            painter.setPen(QPen(QColor(color), 1.0))
+            # Luminous core point
+            painter.setPen(QPen(QColor(color), 1.5))
             painter.setOpacity(alpha / 255.0)
             painter.drawPoints(points)
 
@@ -727,13 +729,17 @@ class StereometerModule(BaseModule):
                 painter.restore()
                 return
 
-            pen = QPen(QColor(color), 2.0)
-            pen.setJoinStyle(Qt.RoundJoin)
-            painter.setPen(pen)
+            # Glowing bloom pass
+            pen_glow = QPen(QColor(color), 3.0)
+            pen_glow.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen_glow)
             painter.setOpacity(alpha / 255.0 * 0.35)
             painter.drawPolyline(points)
 
-            painter.setPen(QPen(QColor(color), 1.0))
+            # Luminous core beam pass
+            pen_core = QPen(QColor(color), 1.5)
+            pen_core.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen_core)
             painter.setOpacity(alpha / 255.0)
             painter.drawPolyline(points)
             
@@ -768,14 +774,17 @@ class StereometerModule(BaseModule):
                 painter.restore()
                 return
             
-            # Glow
-            pen = QPen(QColor(color), 2.0)
-            pen.setJoinStyle(Qt.RoundJoin)
-            painter.setPen(pen)
-            painter.setOpacity(alpha / 255.0 * 0.4)
+            # Glow / bloom pass
+            pen_glow = QPen(QColor(color), 3.0)
+            pen_glow.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen_glow)
+            painter.setOpacity(alpha / 255.0 * 0.35)
             painter.drawPolyline(points)
             
-            painter.setPen(QPen(QColor(color), 1.0))
+            # Luminous core beam pass
+            pen_core = QPen(QColor(color), 1.5)
+            pen_core.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen_core)
             painter.setOpacity(alpha / 255.0)
             painter.drawPolyline(points)
             

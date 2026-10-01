@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QMenu, QComboBox, QPushButton, QLabel, QFrame, QApplication,
     QSizePolicy, QWidgetAction, QGraphicsOpacityEffect,
 )
-from PySide6.QtCore import Qt, QPoint, QRect, QSize, Signal, QTimer, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, QPoint, QRect, QRectF, QSize, Signal, QTimer, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QAction, QColor, QCursor, QIcon, QActionGroup
 
 from app.theme import (
@@ -29,17 +29,34 @@ from app.modules import oscilloscope, loudness_meter, vu_meter  # noqa
 from app.modules import stereometer, spectrum, spectrogram, waveform  # noqa
 
 
-class LoadingOverlay(QWidget):
-    """Professional splash overlay with animation."""
-    def __init__(self, parent=None):
+class SkeletonLoadingOverlay(QWidget):
+    """Skeleton loading overlay displaying module wireframe placeholders and shimmer based on settings."""
+
+    def __init__(self, parent=None, modules=None, vertical=True):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self._opacity = 1.0
+        parsed_keys = []
+        raw_modules = modules if modules is not None else ["loudness", "stereometer", "spectrum"]
+        for m in raw_modules:
+            if isinstance(m, str):
+                parsed_keys.append(m)
+            elif isinstance(m, dict):
+                k = m.get("key")
+                if k and isinstance(k, str):
+                    parsed_keys.append(k)
+        if not parsed_keys:
+            parsed_keys = ["loudness", "stereometer", "spectrum"]
+        self._modules = parsed_keys
+        self._vertical = vertical
+        self._status = "Initializing core components..."
         
-        # Smoothed colors
         self._colors = {
             "BG_DARKEST": QColor(Colors.BG_DARKEST),
-            "ACCENT": QColor(Colors.ACCENT)
+            "BG_INPUT": QColor(Colors.BG_INPUT),
+            "ACCENT": QColor(Colors.ACCENT),
+            "TEXT_DIM": QColor(Colors.TEXT_DIM),
+            "BORDER": QColor(Colors.BORDER)
         }
         
         self._timer = QTimer(self)
@@ -48,64 +65,147 @@ class LoadingOverlay(QWidget):
         import time
         self._birth = time.time()
 
+    def set_status(self, text):
+        self._status = text
+        self.update()
+
     def _animate(self):
-        # Lerp colors towards current global theme
         changed = False
         lerp_speed = 0.05
         for key in self._colors:
-            target = QColor(getattr(Colors, key))
+            target = QColor(getattr(Colors, key, "#222222"))
             current = self._colors[key]
-            
             if current != target:
                 r = current.red() + (target.red() - current.red()) * lerp_speed
                 g = current.green() + (target.green() - current.green()) * lerp_speed
                 b = current.blue() + (target.blue() - current.blue()) * lerp_speed
-                # Alpha handled separately for overlay
                 self._colors[key] = QColor(int(r), int(g), int(b))
                 changed = True
         
-        if changed or self._opacity < 1.0:
+        if changed or self._opacity > 0:
             self.update()
 
     def paintEvent(self, event):
-        from PySide6.QtGui import QPainter
+        from PySide6.QtGui import QPainter, QLinearGradient, QPen
+        import time
         with QPainter(self) as p:
             p.setRenderHint(QPainter.Antialiasing)
             
-            # Background
+            # Base dark background
             bg = QColor(self._colors["BG_DARKEST"])
             bg.setAlpha(int(255 * self._opacity))
             p.fillRect(self.rect(), bg)
             
-            # Pulsing Logo
-            pulse = (math.sin((time.time() - self._birth) * 5) + 1) * 0.5
+            total_rect = self.rect()
+            w, h = total_rect.width(), total_rect.height()
+            if w < 30 or h < 30:
+                return
+
+            # Title bar area offset
+            top_offset = 26
+            content_rect = QRectF(4, top_offset + 4, max(1, w - 8), max(1, h - top_offset - 8))
+            
+            num_slots = max(1, len(self._modules))
+            elapsed = time.time() - self._birth
+            
+            mod_titles = {
+                "loudness": "LOUDNESS",
+                "stereometer": "STEREOMETER",
+                "spectrum": "SPECTRUM",
+                "oscilloscope": "OSCILLOSCOPE",
+                "spectrogram": "SPECTROGRAM",
+                "waveform": "WAVEFORM",
+                "peak": "PEAK METER",
+                "vu_meter": "VU METER",
+            }
+
+            def _card_title(item):
+                if isinstance(item, str):
+                    k = item
+                elif isinstance(item, dict):
+                    k = str(item.get("key", "MODULE"))
+                else:
+                    k = str(item)
+                return mod_titles.get(k.lower(), k.upper())
+
+            p.setOpacity(self._opacity)
+
+            # Draw skeleton cards
+            if self._vertical:
+                slot_h = content_rect.height() / num_slots
+                for idx, m_key in enumerate(self._modules):
+                    slot_rect = QRectF(content_rect.x(), content_rect.y() + idx * slot_h + 2,
+                                       content_rect.width(), max(4, slot_h - 4))
+                    self._draw_skeleton_card(p, slot_rect, _card_title(m_key), elapsed, idx)
+            else:
+                slot_w = content_rect.width() / num_slots
+                for idx, m_key in enumerate(self._modules):
+                    slot_rect = QRectF(content_rect.x() + idx * slot_w + 2, content_rect.y(),
+                                       max(4, slot_w - 4), content_rect.height())
+                    self._draw_skeleton_card(p, slot_rect, _card_title(m_key), elapsed, idx)
+
+            # Status footer
+            if h >= 100 and w >= 120:
+                p.setFont(Fonts.small())
+                p.setPen(QColor(self._colors["TEXT_DIM"]))
+                status_rect = QRectF(10, h - 22, w - 20, 16)
+                p.drawText(status_rect, Qt.AlignCenter, str(self._status).upper())
+
+    def _draw_skeleton_card(self, p, rect, title, elapsed, idx):
+        from PySide6.QtGui import QLinearGradient, QPen
+        
+        # Base card
+        card_bg = QColor(self._colors["BG_INPUT"])
+        card_bg.setAlpha(120)
+        p.setPen(QPen(QColor(self._colors["BORDER"]), 1))
+        p.setBrush(card_bg)
+        p.drawRoundedRect(rect, 4, 4)
+
+        # Shimmer gradient sweep
+        shimmer_phase = ((elapsed * 1.2 + idx * 0.3) % 2.0) - 0.5
+        gw = rect.width() if rect.width() > rect.height() else rect.height()
+        start_x = rect.x() + shimmer_phase * gw
+        grad = QLinearGradient(start_x, rect.y(), start_x + 80, rect.y() + 80)
+        shimmer_col = QColor(self._colors["ACCENT"])
+        shimmer_col.setAlpha(25)
+        grad.setColorAt(0, Qt.transparent)
+        grad.setColorAt(0.5, shimmer_col)
+        grad.setColorAt(1, Qt.transparent)
+        p.setPen(Qt.NoPen)
+        p.setBrush(grad)
+        p.drawRoundedRect(rect, 4, 4)
+
+        # Skeleton badge title
+        if rect.width() >= 60 and rect.height() >= 30:
+            p.setFont(Fonts.small())
             text_col = QColor(self._colors["ACCENT"])
-            text_col.setAlpha(int((150 + 105 * pulse) * self._opacity))
-            
+            text_col.setAlpha(160)
             p.setPen(text_col)
-            f = Fonts.header()
-            f.setPointSize(24)
-            p.setFont(f)
-            p.drawText(self.rect(), Qt.AlignCenter, "PYDSPMETERS")
-            
-            f.setPointSize(10)
-            p.setFont(f)
-            p.setPen(QColor(Colors.TEXT_DIM))
-            p.drawText(self.rect().adjusted(0, 50, 0, 50), Qt.AlignCenter, "INITIALIZING ENGINE...")
+            badge_rect = QRectF(rect.x() + 8, rect.y() + 6, rect.width() - 16, 16)
+            p.drawText(badge_rect, Qt.AlignLeft | Qt.AlignVCenter, title)
+
+            # Skeleton wireframe bars/lines
+            p.setPen(QPen(QColor(self._colors["BORDER"]), 1, Qt.DotLine))
+            mid_y = rect.y() + rect.height() * 0.5
+            p.drawLine(int(rect.x() + 10), int(mid_y), int(rect.right() - 10), int(mid_y))
 
     def fade_out(self):
         self._fade_timer = QTimer(self)
         def step():
-            self._opacity -= 0.05
+            self._opacity -= 0.08
             if self._opacity <= 0:
                 self._fade_timer.stop()
                 self.hide()
                 if self.parent() and hasattr(self.parent(), "_on_overlay_finished"):
                     self.parent()._on_overlay_finished()
                 self.deleteLater()
+                return
             self.update()
         self._fade_timer.timeout.connect(step)
-        self._fade_timer.start(20)
+        self._fade_timer.start(16)
+
+
+LoadingOverlay = SkeletonLoadingOverlay
 
 
 def _icon_btn(text, tooltip, size=22):
@@ -354,8 +454,9 @@ class MainWindow(QMainWindow):
             self._show_headers = win_s.get("show_headers", True)
             self._auto_hide_ui = win_s.get("auto_hide_ui", False)
         
-        # Loading Overlay (Internal window fade-in)
-        self._loading_overlay = LoadingOverlay(self)
+        # Loading Overlay (Skeleton wireframes + early layout)
+        saved_mods = self._settings.get("modules", ["loudness", "stereometer", "spectrum"])
+        self._loading_overlay = SkeletonLoadingOverlay(self, modules=saved_mods, vertical=self._layout_vertical)
         self._loading_overlay.resize(self.size())
         self._loading_overlay.raise_()
         self._loading_overlay.show()
@@ -426,7 +527,8 @@ class MainWindow(QMainWindow):
         self._auto_hide_ui = win_s.get("auto_hide_ui", False)
         self._appbar_edge = win_s.get("appbar_edge", "right")
         self._appbar_saved = win_s.get("appbar_active", False)
-        self._appbar_active = False # Will be restored in finish_loading
+        self._appbar_ignore_screenshot_resets = win_s.get("appbar_ignore_screenshot_resets", True)
+        self._appbar_active = False # Will be restored in finish_loading or docked early
         self._appbar_registered_hwnd = None
         self._appbar_callback_msg = 0
         self._appbar_taskbar_msg = 0
@@ -451,6 +553,12 @@ class MainWindow(QMainWindow):
         self._ghost_fade_anims = {}
         self._ghost_fade_duration_ms = 100
         self._update_ghost_mode()
+
+        if self._appbar_saved:
+            self._appbar_active = True
+            self.show()
+            self._apply_appbar()
+            self._start_appbar_watchdog()
         
         # Divider settings (must be after apply_theme to use correct BORDER color)
         self._divider_width = win_s.get("divider_width", 4)
@@ -482,6 +590,9 @@ class MainWindow(QMainWindow):
             if self._splash:
                 self._splash.set_progress(60 + int(30 * (i / len(module_items))), f"Loading {m_key}...")
                 QApplication.processEvents()
+            if hasattr(self, "_loading_overlay") and self._loading_overlay:
+                self._loading_overlay.set_status(f"Loading {m_key}...")
+                QApplication.processEvents()
             
             logging.info(f"UI: Loading module '{m_key}'")
             self.add_module(m_key, m_config)
@@ -511,8 +622,8 @@ class MainWindow(QMainWindow):
         else:
             self._maybe_enable_ghost_hover()
         
-        # Restore appbar after window is fully laid out
-        if getattr(self, "_appbar_saved", False):
+        # Restore appbar after window is fully laid out (if not already active from early dock)
+        if getattr(self, "_appbar_saved", False) and not getattr(self, "_appbar_active", False):
             # Immediate toggle during startup to avoid 'pushed down' glitch
             # Slight delay to ensure window handle is fully established and mapped
             self._toggle_appbar(True, delay=100)
@@ -716,6 +827,12 @@ class MainWindow(QMainWindow):
         repair_act = appbar_menu.addAction("Repair App Bar")
         repair_act.setEnabled(self._appbar_active)
         repair_act.triggered.connect(self._manual_repair_appbar)
+        
+        appbar_menu.addSeparator()
+        immune_act = appbar_menu.addAction("Prevent Screenshot Resets (Win+Shift+S)")
+        immune_act.setCheckable(True)
+        immune_act.setChecked(getattr(self, "_appbar_ignore_screenshot_resets", True))
+        immune_act.triggered.connect(lambda checked: setattr(self, "_appbar_ignore_screenshot_resets", bool(checked)))
         
         appbar_menu.addSeparator()
         edge_group = QActionGroup(self)
@@ -1161,6 +1278,24 @@ class MainWindow(QMainWindow):
             return False, 0
         return False, 0
 
+    def _is_snipping_tool_active(self):
+        import sys
+        if sys.platform != "win32":
+            return False
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            if hwnd:
+                length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                buf = ctypes.create_unicode_buffer(length + 1)
+                ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+                t = buf.value.lower()
+                if "snipping" in t or "screen clipping" in t or "snip & sketch" in t:
+                    return True
+        except Exception:
+            pass
+        return False
+
     def _handle_appbar_callback(self, notification, value):
         ABN_STATECHANGE = 0
         ABN_POSCHANGED = 1
@@ -1173,12 +1308,19 @@ class MainWindow(QMainWindow):
             self._set_appbar_topmost(not fullscreen_active)
             if fullscreen_active:
                 return
+            if getattr(self, "_appbar_ignore_screenshot_resets", False):
+                return
             self._schedule_appbar_repair(delay=1200, force_register=True)
             return
 
         if notification == ABN_POSCHANGED:
+            if getattr(self, "_appbar_ignore_screenshot_resets", True):
+                if self._is_snipping_tool_active() or self._appbar_geometry_matches():
+                    return
             self._schedule_appbar_repair(delay=250, force_register=False)
         elif notification in (ABN_STATECHANGE, ABN_WINDOWARRANGE):
+            if getattr(self, "_appbar_ignore_screenshot_resets", True) and self._is_snipping_tool_active():
+                return
             self._schedule_appbar_repair(delay=700, force_register=False)
 
     def _toggle_appbar(self, checked, delay=100):
@@ -1214,6 +1356,8 @@ class MainWindow(QMainWindow):
             return
         if getattr(self, "_appbar_fullscreen_active", False):
             return
+        if getattr(self, "_appbar_ignore_screenshot_resets", True) and self._is_snipping_tool_active():
+            return
         if self._appbar_health_ok():
             self._appbar_health_failures = 0
             return
@@ -1238,6 +1382,8 @@ class MainWindow(QMainWindow):
         force_register = self._appbar_repair_force
         self._appbar_repair_force = False
         if not getattr(self, "_appbar_active", False):
+            return
+        if getattr(self, "_appbar_ignore_screenshot_resets", True) and self._is_snipping_tool_active():
             return
         if force_register:
             self._release_appbar(restore_window=False)
@@ -1834,6 +1980,7 @@ class MainWindow(QMainWindow):
                 "auto_hide_ui": self._auto_hide_ui,
                 "appbar_edge": self._appbar_edge,
                 "appbar_active": self._appbar_active,
+                "appbar_ignore_screenshot_resets": getattr(self, "_appbar_ignore_screenshot_resets", True),
                 "divider_width": getattr(self, "_divider_width", self.splitter.handleWidth()),
                 "divider_opacity": self._settings.get("window", {}).get("divider_opacity", 100)
             },
