@@ -317,6 +317,85 @@ def test_stereometer_xy_mode_renders_without_errors():
     module._render(painter, image.width(), image.height())
     painter.end()
 
+def test_stereometer_auto_width_expands_quiet_side():
+    engine = MockEngine()
+    module = StereometerModule(engine)
+    module._auto_width = True
+    module._auto_width_gain = 1.0
+
+    # Feed stereo track with loud Mid (0.8) and quiet Side (0.05)
+    t = np.arange(1024) / 44100.0
+    mid = 0.8 * np.sin(2 * np.pi * 440 * t)
+    side = 0.05 * np.cos(2 * np.pi * 880 * t)
+    left = (mid + side).astype(np.float32)
+    right = (mid - side).astype(np.float32)
+
+    for _ in range(10):
+        module.on_audio_data(np.column_stack([left, right]))
+
+    # Auto width gain should dynamically boost Side so the cloud opens up
+    assert module._auto_width_gain > 1.5
+
+def test_stereometer_scaled_and_linear_modes_render():
+    engine = MockEngine()
+    module = StereometerModule(engine)
+
+    left = np.sin(np.linspace(0, np.pi * 4, 1024)).astype(np.float32)
+    right = np.cos(np.linspace(0, np.pi * 4, 1024)).astype(np.float32)
+    module.on_audio_data(np.column_stack([left, right]))
+
+    for mode in ["Scaled", "Linear", "Vectorscope"]:
+        module._display_mode = mode
+        image = QImage(200, 200, QImage.Format_ARGB32)
+        image.fill(0)
+        painter = QPainter(image)
+        module._render(painter, image.width(), image.height())
+        painter.end()
+
+def test_stereometer_circular_signal_preserves_ring():
+    engine = MockEngine()
+    module = StereometerModule(engine)
+    module._auto_width = False
+    module._width_gain = 1.0
+
+    # 90-degree phase shift sine/cosine circle
+    t = np.linspace(0, np.pi * 4, 1024, endpoint=False)
+    left = (0.5 * np.sin(t)).astype(np.float32)
+    right = (0.5 * np.cos(t)).astype(np.float32)
+    module.on_audio_data(np.column_stack([left, right]))
+
+    for mode in ["Linear", "Scaled"]:
+        module._display_mode = mode
+        dx = (module._right - module._left) * 0.5
+        dy = (module._left + module._right) * 0.5
+        if mode == "Scaled":
+            r = np.sqrt(dx * dx + dy * dy)
+            r_safe = np.maximum(r, 1e-7)
+            scale = np.power(r_safe, 0.8) / r_safe
+            dx = dx * scale
+            dy = dy * scale
+
+        r_computed = np.sqrt(dx * dx + dy * dy)
+        # Radius along the ring must be uniform, proving no 4-quadrant pinch
+        assert np.var(r_computed) < 1e-4
+
+def test_oscilloscope_high_frequency_vertex_cap():
+    engine = MockEngine()
+    module = OscilloscopeModule(engine)
+    module._display_samples = 8192
+
+    # High frequency 12kHz audio with dense zero-crossings
+    t = np.arange(8192) / 44100.0
+    sig = np.sin(2 * np.pi * 12000 * t).astype(np.float32)
+    module.on_audio_data(np.column_stack([sig, sig]))
+
+    # Large width (1920) should still cap trace vertices to <= 480
+    image = QImage(1920, 600, QImage.Format_ARGB32)
+    image.fill(0)
+    painter = QPainter(image)
+    module._render(painter, image.width(), image.height())
+    painter.end()
+
 def test_appbar_fullscreen_callback_restores_with_forced_repair():
     class DummyWindow:
         def __init__(self):
@@ -481,4 +560,106 @@ def test_spectrum_categorized_context_menu():
     assert "Mode" in titles
     assert "Display & Notes" in titles
     assert "FFT & Response" in titles
+
+
+def test_spectrum_tilt_recast_grid():
+    engine = MockEngine()
+    module = SpectrumModule(engine)
+    assert module._grid_pixmap is None
+    module._recast_grid(400, 150)
+    assert module._grid_pixmap is not None
+    assert module._grid_pixmap.width() == 400
+    assert module._grid_pixmap.height() == 150
+
+    # Changing tilt invalidates cache for recast
+    module._set_tilt(3.0)
+    assert module._grid_pixmap is None
+    module._recast_grid(400, 150)
+    assert module._grid_pixmap is not None
+
+    # Changing scale or f_max invalidates cache
+    module._set_scale("linear")
+    assert module._grid_pixmap is None
+    module._set_f_max_mode("20 kHz")
+    assert module._grid_pixmap is None
+
+
+def test_spectrum_high_cut_modes():
+    engine = MockEngine()
+    engine.sample_rate = 48000.0
+    module = SpectrumModule(engine)
+
+    module._f_max_mode = "16 kHz"
+    assert module._get_f_max() == 16000.0
+
+    module._f_max_mode = "18 kHz"
+    assert module._get_f_max() == 18000.0
+
+    module._f_max_mode = "20 kHz"
+    assert module._get_f_max() == 20000.0
+
+    module._f_max_mode = "22 kHz"
+    assert module._get_f_max() == 22050.0
+
+    module._f_max_mode = "Nyquist"
+    assert module._get_f_max() == 24000.0
+
+
+def test_spectrum_mono_audio_collapses_stereo_ribbon():
+    import numpy as np
+    engine = MockEngine()
+    module = SpectrumModule(engine)
+    module._channel = "L+R"
+    dw = 600
+
+    px_x = np.linspace(0, dw - 1, 1000)
+    mag = np.random.randn(1000).astype(np.float32) * 5.0 - 30.0
+
+    # Mono audio: L and R have identical spectrum
+    s_l = module._resample_channel_to_pixels(px_x, mag, dw)
+    s_r = module._resample_channel_to_pixels(px_x, mag, dw)
+    assert np.allclose(s_l, s_r)
+
+    s_max = np.maximum(s_l, s_r)
+    s_min = np.minimum(s_l, s_r)
+    # When mono, stereo difference is exactly 0
+    assert np.allclose(s_max, s_min)
+
+
+def test_spectrum_resample_preserves_high_frequency_peaks():
+    import numpy as np
+    engine = MockEngine()
+    module = SpectrumModule(engine)
+    dw = 600
+
+    # 1000 bins mapped across dw
+    px_x = np.linspace(0, dw - 1, 1000)
+    mag = np.full(1000, -60.0, dtype=np.float32)
+    # Inject a 0 dB peak at bin 950 (high frequency near edge)
+    mag[950] = 0.0
+
+    sx, s_max, s_min = module._resample_spectrum_to_pixels(px_x, mag, mag, dw)
+    target_px = int(round(px_x[950]))
+    # Peak must be preserved within the visual smoothing window
+    assert s_max[target_px] > -10.0
+
+
+def test_spectrum_settings_persistence():
+    engine = MockEngine()
+    module = SpectrumModule(engine)
+    module._tilt = -3.0
+    module._show_scale = False
+    module._f_max_mode = "Nyquist (Fs/2)"
+
+    settings = module.get_settings()
+    assert settings["tilt"] == -3.0
+    assert settings["show_scale"] is False
+    assert settings["f_max_mode"] == "Nyquist (Fs/2)"
+
+    new_mod = SpectrumModule(engine)
+    new_mod.apply_settings(settings)
+    assert new_mod._tilt == -3.0
+    assert new_mod._show_scale is False
+    assert new_mod._f_max_mode == "Nyquist (Fs/2)"
+
 

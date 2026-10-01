@@ -110,3 +110,19 @@ def test_get_history():
     history = engine.get_history(0.5) # 50 samples
     assert history.shape == (50, 2)
     assert np.all(history == 0.0) # Should all be from data2
+
+def test_drain_queue_preserves_contiguous_samples_on_backlog():
+    engine = AudioEngine(block_size=512)
+    engine.data_ready = MagicMock()
+    # Queue up 6 blocks (3072 samples)
+    for _ in range(6):
+        engine._queue.put(np.ones((512, 2), dtype=np.float32))
+
+    engine._drain_queue()
+
+    # Full 3072 samples must be written to circular buffer and emitted in full
+    # to preserve phase continuity for high sample modules (32k FFT, 8.1k oscilloscope)
+    assert engine._total_written == 3072
+    emitted = engine.data_ready.emit.call_args[0][0]
+    assert len(emitted) == 3072
+

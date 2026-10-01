@@ -355,7 +355,8 @@ class OscilloscopeModule(BaseModule):
 
     def _draw_trace(self, painter, ch, w, h, center, factor, color, vertical=False, trace_key=0):
         long_axis = h if vertical else w
-        num_points = min(self._display_samples, int(long_axis))
+        # Cap trace vertices to prevent CPU rasterizer stall on high frequency loads
+        num_points = min(self._display_samples, int(long_axis), 480)
         if num_points < 2 or len(ch) < 2:
             return
 
@@ -382,11 +383,16 @@ class OscilloscopeModule(BaseModule):
         else:
             points = [QPointF(t_coords[i], v_coords[i]) for i in range(actual_pts)]
 
-        gc = QColor(color)
-        gc.setAlpha(40)
-        painter.setPen(QPen(gc, 3.0))
-        painter.drawPolyline(points)
+        if actual_pts <= 280:
+            gc = QColor(color)
+            gc.setAlpha(40)
+            pen_glow = QPen(gc, 2.5)
+            pen_glow.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen_glow)
+            painter.drawPolyline(points)
 
-        painter.setPen(QPen(QColor(color), 1.5))
+        pen_core = QPen(QColor(color), 1.5)
+        pen_core.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen_core)
         painter.drawPolyline(points)
 

@@ -39,9 +39,52 @@ class SpectrumModule(BaseModule):
         self._peak_history = []
         self._speed = 1.0
         self._tilt = 4.5  # dB/octave tilt for balance
+        self._show_scale = True
+        self._f_max_mode = "20 kHz"
+        self._grid_pixmap = None
         self.module_key = "spectrum"
         super().__init__(audio_engine, title="Spectrum", parent=parent)
         self.canvas.set_render_func(self._render)
+
+    def on_theme_changed(self):
+        self._grid_pixmap = None
+        super().on_theme_changed()
+
+    def _get_f_max(self):
+        sr = getattr(self.audio_engine, "sample_rate", 44100.0)
+        nyquist = sr * 0.5
+        mode = getattr(self, "_f_max_mode", "20 kHz")
+        if mode == "16 kHz":
+            return min(16000.0, nyquist)
+        elif mode == "18 kHz":
+            return min(18000.0, nyquist)
+        elif mode == "20 kHz":
+            return min(20000.0, nyquist)
+        elif mode in ("Nyquist (Fs/2)", "Nyquist"):
+            return nyquist
+        elif mode == "22 kHz":
+            return min(22050.0, nyquist)
+        return min(20000.0, nyquist)
+
+    def _set_tilt(self, v):
+        self._tilt = float(v)
+        self._grid_pixmap = None
+
+    def _set_scale(self, s):
+        self._scale = s
+        self._grid_pixmap = None
+
+    def _set_f_max_mode(self, mode):
+        self._f_max_mode = mode
+        self._grid_pixmap = None
+
+    def _set_show_scale(self, show):
+        self._show_scale = bool(show)
+        self._grid_pixmap = None
+
+    def _set_orientation(self, o):
+        self._orientation = o
+        self._grid_pixmap = None
 
     def get_settings(self):
         return {
@@ -54,7 +97,9 @@ class SpectrumModule(BaseModule):
             "show_note": self._show_note,
             "show_floating_note": self._show_floating_note,
             "speed": self._speed,
-            "tilt": self._tilt
+            "tilt": self._tilt,
+            "show_scale": self._show_scale,
+            "f_max_mode": self._f_max_mode,
         }
 
     def apply_settings(self, settings):
@@ -68,6 +113,9 @@ class SpectrumModule(BaseModule):
         self._show_floating_note = settings.get("show_floating_note", self._show_floating_note)
         self._speed = float(settings.get("speed", self._speed))
         self._tilt = float(settings.get("tilt", self._tilt))
+        self._show_scale = bool(settings.get("show_scale", self._show_scale))
+        self._f_max_mode = settings.get("f_max_mode", self._f_max_mode)
+        self._grid_pixmap = None
 
     def build_context_menu(self, menu):
         from PySide6.QtGui import QActionGroup
@@ -88,7 +136,7 @@ class SpectrumModule(BaseModule):
             a = om.addAction(o)
             a.setCheckable(True)
             a.setChecked(o == getattr(self, "_orientation", "Horizontal"))
-            a.triggered.connect(lambda checked, t=o: setattr(self, "_orientation", t))
+            a.triggered.connect(lambda checked, t=o: self._set_orientation(t))
             og.addAction(a)
 
         mm = menu.addMenu("Mode")
@@ -113,6 +161,11 @@ class SpectrumModule(BaseModule):
         a_fp.setEnabled(self._show_note)
         a_fp.triggered.connect(lambda checked: setattr(self, "_show_floating_note", checked))
 
+        a_scale = dnm.addAction("Side dB Scale")
+        a_scale.setCheckable(True)
+        a_scale.setChecked(self._show_scale)
+        a_scale.triggered.connect(lambda checked: self._set_show_scale(checked))
+
         # FFT & Response
         frm = menu.addMenu("FFT & Response")
         fm = frm.addMenu("FFT Size")
@@ -130,8 +183,17 @@ class SpectrumModule(BaseModule):
             a = scm.addAction(s)
             a.setCheckable(True)
             a.setChecked(s.lower() == self._scale)
-            a.triggered.connect(lambda checked, t=s: setattr(self, "_scale", t.lower()))
+            a.triggered.connect(lambda checked, t=s: self._set_scale(t.lower()))
             scg.addAction(a)
+
+        hcm = frm.addMenu("High Frequency Cut")
+        hcg = QActionGroup(self)
+        for hc in ["16 kHz", "18 kHz", "20 kHz", "22 kHz", "Nyquist (Fs/2)"]:
+            a = hcm.addAction(hc)
+            a.setCheckable(True)
+            a.setChecked(hc == self._f_max_mode)
+            a.triggered.connect(lambda checked, t=hc: self._set_f_max_mode(t))
+            hcg.addAction(a)
 
         sm_speed = frm.addMenu("Speed")
         sg_speed = QActionGroup(self)
@@ -157,7 +219,7 @@ class SpectrumModule(BaseModule):
             a = tm.addAction(f"{t_val:g} dB/oct")
             a.setCheckable(True)
             a.setChecked(abs(t_val - self._tilt) < 0.1)
-            a.triggered.connect(lambda checked, v=t_val: setattr(self, "_tilt", v))
+            a.triggered.connect(lambda checked, v=t_val: self._set_tilt(v))
             tg.addAction(a)
 
     def _set_fft_size(self, size):
@@ -173,13 +235,31 @@ class SpectrumModule(BaseModule):
             copy_n = min(len(old_l), min_buf)
             self._acc_buf_l[-copy_n:] = old_l[-copy_n:]
             self._acc_buf_r[-copy_n:] = old_r[-copy_n:]
+        self._grid_pixmap = None
+
+    def _resample_channel_to_pixels(self, px_x, mag, dw):
+        pixel_count = max(2, int(dw))
+        screen_x = np.arange(pixel_count, dtype=np.float32)
+        base = np.interp(screen_x, px_x, mag, left=mag[0], right=mag[-1])
+        
+        px_indices = np.clip(np.round(px_x).astype(np.int32), 0, pixel_count - 1)
+        peak = np.full(pixel_count, -120.0, dtype=np.float32)
+        np.maximum.at(peak, px_indices, mag.astype(np.float32))
+        
+        has_bins = peak > -119.0
+        out = np.where(has_bins, np.maximum(base, peak), base)
+        
+        kernel = np.array([0.2, 0.6, 0.2], dtype=np.float32)
+        smooth = np.convolve(out, kernel, mode='same')
+        smooth[0], smooth[-1] = out[0], out[-1]
+        out = np.maximum(smooth, out)
+        return out
 
     def _resample_spectrum_to_pixels(self, px_x, mag_max, mag_min, dw):
-        pixel_count = max(2, int(dw))
-        screen_x = np.linspace(0, max(1, pixel_count - 1), pixel_count)
-        max_vals = np.interp(screen_x, px_x, mag_max, left=mag_max[0], right=mag_max[-1])
-        min_vals = np.interp(screen_x, px_x, mag_min, left=mag_min[0], right=mag_min[-1])
-        return screen_x, max_vals, min_vals
+        s_max = self._resample_channel_to_pixels(px_x, mag_max, dw)
+        s_min = self._resample_channel_to_pixels(px_x, mag_min, dw)
+        screen_x = np.arange(max(2, int(dw)), dtype=np.float32)
+        return screen_x, s_max, s_min
 
     def on_audio_data(self, data: np.ndarray):
         l = data[:, 0]
@@ -197,13 +277,12 @@ class SpectrumModule(BaseModule):
         buf_len = len(self._acc_buf_l)
         if n >= buf_len:
             self._acc_buf_l[:] = sig_l[-buf_len:]
-            if is_stereo: self._acc_buf_r[:] = sig_r[-buf_len:]
+            self._acc_buf_r[:] = sig_r[-buf_len:]
         else:
             self._acc_buf_l = np.roll(self._acc_buf_l, -n)
             self._acc_buf_l[-n:] = sig_l
-            if is_stereo:
-                self._acc_buf_r = np.roll(self._acc_buf_r, -n)
-                self._acc_buf_r[-n:] = sig_r
+            self._acc_buf_r = np.roll(self._acc_buf_r, -n)
+            self._acc_buf_r[-n:] = sig_r
 
         n_steps = int(self._speed)
         step_size = n // n_steps if n_steps > 1 else n
@@ -257,7 +336,149 @@ class SpectrumModule(BaseModule):
             self._peak_history.clear()
             self._smooth_peak_db = -120.0
 
+    def _recast_grid(self, w: int, h: int):
+        from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QPainterPath
+        from PySide6.QtCore import Qt, QRectF
+        
+        pixmap = QPixmap(w, h)
+        pixmap.fill(Qt.transparent)
+        p = QPainter(pixmap)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        
+        is_vertical = getattr(self, "_orientation", "Horizontal") == "Vertical"
+        if getattr(self, "_orientation", "Horizontal") == "Auto":
+            is_vertical = h > w * 1.1
+
+        db_min, db_max = -90.0, 0.0
+        mb = 16
+        if is_vertical:
+            dh = w - mb
+            dw = h
+        else:
+            dh = h - mb
+            dw = w
+            
+        f_min = 20.0
+        f_max = self._get_f_max()
+        scale = getattr(self, "_scale", "logarithmic")
+        tilt = float(getattr(self, "_tilt", 4.5))
+        show_scale = getattr(self, "_show_scale", True)
+
+        p.setFont(Fonts.small())
+
+        # 1. Frequency dotted grid lines
+        grid_freqs = [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
+        for gf in grid_freqs:
+            if gf > f_max:
+                continue
+            px = map_frequencies_to_pixels(np.array([gf], dtype=np.float64), dw, scale, f_min=f_min, f_max=f_max)[0]
+            if 0 < px < dw - 2:
+                p.setPen(QPen(QColor(Colors.GRID), 1, Qt.DotLine))
+                if is_vertical:
+                    py = h - px
+                    p.drawLine(0, int(py), int(dh), int(py))
+                    if h > 100:
+                        lb = f"{gf}" if gf < 1000 else f"{gf//1000}k"
+                        p.setFont(self.get_responsive_font(Fonts.small, mb, 14, lb))
+                        self.draw_text_badge(p, QRectF(dh + 2, py - 7, mb - 4, 14), Qt.AlignLeft | Qt.AlignVCenter, lb, QColor(Colors.TEXT_DIM))
+                else:
+                    p.drawLine(int(px), 0, int(px), int(dh))
+                    if w > 100:
+                        lb = f"{gf}" if gf < 1000 else f"{gf//1000}k"
+                        from PySide6.QtGui import QFontMetrics
+                        fm = QFontMetrics(Fonts.small())
+                        tw = fm.horizontalAdvance(lb) + 12
+                        p.setFont(self.get_responsive_font(Fonts.small, tw, 14, lb))
+                        self.draw_text_badge(p, QRectF(px - tw/2, dh + 2, tw, 14), Qt.AlignCenter, lb, QColor(Colors.TEXT_DIM))
+
+        # 2. Amplitude grid lines (curved upwards with tilt)
+        n_pts = max(10, int(dw // 4))
+        grid_x = np.linspace(0, dw - 1, n_pts)
+        
+        if scale == "linear":
+            sample_freqs = f_min + (grid_x / max(1.0, dw - 1.0)) * (f_max - f_min)
+        elif scale == "mel":
+            mel_min = 2595.0 * np.log10(1.0 + f_min / 700.0)
+            mel_max = 2595.0 * np.log10(1.0 + f_max / 700.0)
+            mel_vals = mel_min + (grid_x / max(1.0, dw - 1.0)) * (mel_max - mel_min)
+            sample_freqs = 700.0 * (10.0 ** (mel_vals / 2595.0) - 1.0)
+        else: # logarithmic
+            log_min = np.log10(max(f_min, 1.0))
+            log_max = np.log10(f_max)
+            log_vals = log_min + (grid_x / max(1.0, dw - 1.0)) * (log_max - log_min)
+            sample_freqs = 10.0 ** log_vals
+
+        tilt_offsets = np.log2(np.clip(sample_freqs, 20.0, None) / 1000.0) * tilt
+
+        db_lines = list(range(-80, 1, 10))
+        for db in db_lines:
+            levels = db + tilt_offsets
+            fracs = (levels - db_min) / (db_max - db_min)
+            
+            p.setPen(QPen(QColor(Colors.GRID), 1, Qt.DotLine))
+            path = QPainterPath()
+            started = False
+            
+            for i in range(n_pts):
+                frac = fracs[i]
+                if is_vertical:
+                    x_pos = dh * frac
+                    y_pos = h - grid_x[i]
+                    in_bounds = (0 <= x_pos <= dh) and (0 <= y_pos <= h)
+                    pt = QPointF(x_pos, y_pos)
+                else:
+                    x_pos = grid_x[i]
+                    y_pos = dh * (1.0 - frac)
+                    in_bounds = (0 <= x_pos <= dw) and (0 <= y_pos <= dh)
+                    pt = QPointF(x_pos, y_pos)
+                
+                if in_bounds:
+                    if not started:
+                        path.moveTo(pt)
+                        started = True
+                    else:
+                        path.lineTo(pt)
+                else:
+                    if started:
+                        p.drawPath(path)
+                        path = QPainterPath()
+                        started = False
+                        
+            if started:
+                p.drawPath(path)
+
+        # 3. Numeric amplitude scale markings on the side
+        if show_scale:
+            p.setFont(Fonts.small())
+            scale_color = QColor(Colors.TEXT_DIM)
+            scale_color.setAlpha(170)
+            p.setPen(scale_color)
+            
+            major_dbs = [-18, -36, -54, -72] if (dh < 140) else [-10, -20, -30, -40, -50, -60, -70, -80]
+            
+            for db in major_dbs:
+                frac = (db - db_min) / (db_max - db_min)
+                if is_vertical:
+                    x_pos = dh * frac
+                    if 15 < x_pos < dh - 15:
+                        txt = f"{db}"
+                        p.drawText(QRectF(x_pos - 16, h - mb + 2, 32, 14), Qt.AlignCenter, txt)
+                else:
+                    y_pos = dh * (1.0 - frac)
+                    if 10 < y_pos < dh - 10:
+                        txt = f"{db}"
+                        p.drawText(QRectF(4, y_pos - 7, 28, 14), Qt.AlignLeft | Qt.AlignVCenter, txt)
+
+        p.end()
+        self._grid_pixmap = pixmap
+
     def _render(self, painter, w, h):
+        from PySide6.QtCore import QSize
+        if self._grid_pixmap is None or self._grid_pixmap.size() != QSize(w, h):
+            self._recast_grid(w, h)
+            
+        painter.drawPixmap(0, 0, self._grid_pixmap)
+
         is_vertical = getattr(self, "_orientation", "Horizontal") == "Vertical"
         if getattr(self, "_orientation", "Horizontal") == "Auto":
             is_vertical = h > w * 1.1
@@ -272,63 +493,25 @@ class SpectrumModule(BaseModule):
             dw = w
             
         freqs = fft_frequencies(self._fft_size, self.audio_engine.sample_rate)
-        painter.setFont(Fonts.small())
-        
-        # Grid
-        for gf in [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]:
-            px = map_frequencies_to_pixels(np.array([gf]), dw, self._scale)[0]
-            if 0 < px < dw:
-                painter.setPen(QPen(QColor(Colors.GRID), 1, Qt.DotLine))
-                if is_vertical:
-                    py = h - px
-                    painter.drawLine(0, int(py), int(dh), int(py))
-                    if h > 100:
-                        lb = f"{gf}" if gf < 1000 else f"{gf//1000}k"
-                        from PySide6.QtGui import QFontMetrics
-                        fm = QFontMetrics(Fonts.small())
-                        tw = fm.horizontalAdvance(lb) + 12
-                        painter.setFont(self.get_responsive_font(Fonts.small, mb, 14, lb))
-                        self.draw_text_badge(painter, QRectF(dh + 2, py - 7, mb - 4, 14), Qt.AlignLeft | Qt.AlignVCenter, lb, QColor(Colors.TEXT_DIM))
-                else:
-                    painter.drawLine(int(px), 0, int(px), int(dh))
-                    if w > 100:
-                        lb = f"{gf}" if gf < 1000 else f"{gf//1000}k"
-                        from PySide6.QtGui import QFontMetrics
-                        fm = QFontMetrics(Fonts.small())
-                        tw = fm.horizontalAdvance(lb) + 12
-                        painter.setFont(self.get_responsive_font(Fonts.small, tw, 14, lb))
-                        self.draw_text_badge(painter, QRectF(px - tw/2, dh + 2, tw, 14), Qt.AlignCenter, lb, QColor(Colors.TEXT_DIM))
-                        
-        for db in range(-80, 1, 10):
-            frac = (db - db_min) / (db_max - db_min)
-            if is_vertical:
-                x = dh * frac
-                if 0 < x < dh:
-                    painter.setPen(QPen(QColor(Colors.GRID), 1, Qt.DotLine))
-                    painter.drawLine(int(x), 0, int(x), h)
-            else:
-                y = dh * (1.0 - frac)
-                if 0 < y < dh:
-                    painter.setPen(QPen(QColor(Colors.GRID), 1, Qt.DotLine))
-                    painter.drawLine(0, int(y), w, int(y))
-
-        mag_l = np.convolve(self._smoothed_l, np.ones(5)/5.0, mode='same')
-        mag_r = np.convolve(self._smoothed_r, np.ones(5)/5.0, mode='same')
-        
-        mask = (freqs >= 20.0) & (freqs <= 20000.0)
-        px_x = map_frequencies_to_pixels(freqs[mask], dw, self._scale)
-        mag_l_filtered = mag_l[mask]
-        mag_r_filtered = mag_r[mask]
-        mag_max_filtered = np.maximum(mag_l_filtered, mag_r_filtered)
-        mag_min_filtered = np.minimum(mag_l_filtered, mag_r_filtered)
+        f_max = self._get_f_max()
+        mask = (freqs >= 20.0) & (freqs <= f_max)
+        px_x = map_frequencies_to_pixels(freqs[mask], dw, self._scale, f_min=20.0, f_max=f_max)
+        mag_l_filtered = self._smoothed_l[mask]
+        mag_r_filtered = self._smoothed_r[mask]
         nb = len(px_x)
 
         if nb < 2:
             return
 
-        screen_x, mag_max_screen, mag_min_screen = self._resample_spectrum_to_pixels(
-            px_x, mag_max_filtered, mag_min_filtered, dw
-        )
+        screen_x = np.arange(int(dw), dtype=np.float32)
+        mag_l_screen = self._resample_channel_to_pixels(px_x, mag_l_filtered, dw)
+        if self._channel == "L+R":
+            mag_r_screen = self._resample_channel_to_pixels(px_x, mag_r_filtered, dw)
+            mag_max_screen = np.maximum(mag_l_screen, mag_r_screen)
+            mag_min_screen = np.minimum(mag_l_screen, mag_r_screen)
+        else:
+            mag_max_screen = mag_l_screen
+            mag_min_screen = mag_l_screen
 
         if self._mode in ("Color Bars", "Both"):
             n_bars = 64
@@ -368,6 +551,18 @@ class SpectrumModule(BaseModule):
                 else:
                     pts_max.append(QPointF(screen_x[i], dh * (1.0 - frac_max)))
                     pts_min.append(QPointF(screen_x[i], dh * (1.0 - frac_min)))
+            
+            # Ensure the endpoint reaches the exact right bezel edge
+            if len(screen_x) > 0 and (len(screen_x) - 1) % step != 0:
+                last_i = len(screen_x) - 1
+                frac_max = max(0, min(1, (mag_max_screen[last_i] - db_min) / (db_max - db_min)))
+                frac_min = max(0, min(1, (mag_min_screen[last_i] - db_min) / (db_max - db_min)))
+                if is_vertical:
+                    pts_max.append(QPointF(dh * frac_max, h - screen_x[last_i]))
+                    pts_min.append(QPointF(dh * frac_min, h - screen_x[last_i]))
+                else:
+                    pts_max.append(QPointF(screen_x[last_i], dh * (1.0 - frac_max)))
+                    pts_min.append(QPointF(screen_x[last_i], dh * (1.0 - frac_min)))
             
             def create_spline(points):
                 path = QPainterPath()
@@ -442,7 +637,7 @@ class SpectrumModule(BaseModule):
             
             if w > 80:
                 if self._show_floating_note:
-                    px = map_frequencies_to_pixels(np.array([self._smooth_peak_freq]), dw, self._scale)[0]
+                    px = map_frequencies_to_pixels(np.array([self._smooth_peak_freq]), dw, self._scale, f_min=20.0, f_max=f_max)[0]
                     frac = max(0, min(1, (self._smooth_peak_db - db_min) / (db_max - db_min)))
                     if is_vertical:
                         py = h - px

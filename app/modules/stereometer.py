@@ -32,7 +32,7 @@ def _tukey_window(n: int, alpha: float = 0.5) -> np.ndarray:
 class StereometerModule(BaseModule):
 
     def __init__(self, audio_engine, parent=None):
-        self._display_mode = "Vectorscope"
+        self._display_mode = "Linear"
         self._color_mode = "Static"
         self._corr_mode = "Single-Band"
         self._guide_mode = "Rhombus"
@@ -46,11 +46,13 @@ class StereometerModule(BaseModule):
         self._corr_pos = "Bottom"
         self._rotation = 0
         
-        self._width_gain = 1.0 
+        self._width_gain = 1.0
+        self._auto_width = True
+        self._auto_width_gain = 1.0
         self._persistence = 0.5 
         self._max_dots = 1024
-        self._window_alpha = 0.1 
-        self._window_cache = {}
+        self._bands_l = None
+        self._bands_r = None
         self._buffer = None
         self._scope_pixmap = None
         self._scope_pixmap_key = None
@@ -78,6 +80,7 @@ class StereometerModule(BaseModule):
             "auto_zoom": self._auto_zoom,
             "trace_style": self._trace_style,
             "width_gain": self._width_gain,
+            "auto_width": self._auto_width,
             "persistence": self._persistence,
             "max_dots": self._max_dots,
             "show_labels": self._show_labels,
@@ -87,7 +90,7 @@ class StereometerModule(BaseModule):
             "rotation": self._rotation
         }
 
-    _VALID_DISPLAY_MODES = {"Vectorscope", "Lissajous", "XY Oscilloscope"}
+    _VALID_DISPLAY_MODES = {"Linear", "Scaled", "Vectorscope", "Lissajous", "XY Oscilloscope"}
     _VALID_COLOR_MODES = {"Static", "Multi-Band", "Multi-Band (RGB)"}
     _VALID_CORR_MODES = {"Single-Band", "Multi-Band"}
     _VALID_GUIDE_MODES = {"None", "Rhombus", "Circle", "Square"}
@@ -95,7 +98,9 @@ class StereometerModule(BaseModule):
 
     def apply_settings(self, settings):
         dm = settings.get("display_mode", self._display_mode)
-        self._display_mode = dm if dm in self._VALID_DISPLAY_MODES else "Vectorscope"
+        if dm == "Vectorscope":
+            dm = "Linear"
+        self._display_mode = dm if dm in self._VALID_DISPLAY_MODES else "Linear"
         cm = settings.get("color_mode", self._color_mode)
         self._color_mode = cm if cm in self._VALID_COLOR_MODES else "Static"
         crm = settings.get("corr_mode", self._corr_mode)
@@ -107,6 +112,7 @@ class StereometerModule(BaseModule):
         ts = settings.get("trace_style", self._trace_style)
         self._trace_style = ts if ts in self._VALID_TRACE_STYLES else "Persistence"
         self._width_gain = float(settings.get("width_gain", self._width_gain))
+        self._auto_width = bool(settings.get("auto_width", self._auto_width))
         self._persistence = float(settings.get("persistence", self._persistence))
         self._max_dots = int(settings.get("max_dots", self._max_dots))
         self._show_labels = bool(settings.get("show_labels", self._show_labels))
@@ -121,11 +127,11 @@ class StereometerModule(BaseModule):
         # Display Mode
         dm = menu.addMenu("Display Mode")
         dg = QActionGroup(self)
-        for d in ["Vectorscope", "Lissajous", "XY Oscilloscope"]:
+        for d in ["Linear", "Scaled", "Lissajous", "XY Oscilloscope"]:
             a = dm.addAction(d)
             a.setCheckable(True)
-            a.setChecked(d == self._display_mode)
-            a.triggered.connect(lambda checked, t=d: setattr(self, "_display_mode", t))
+            a.setChecked(d == self._display_mode or (d == "Linear" and self._display_mode == "Vectorscope"))
+            a.triggered.connect(lambda checked, t=d: (setattr(self, "_display_mode", t), self._clear_scope_persistence(), self.canvas.update()))
             dg.addAction(a)
 
         # View & Guides
@@ -214,11 +220,16 @@ class StereometerModule(BaseModule):
 
         wm = tm_sub.addMenu("Width Gain")
         wg = QActionGroup(self)
+        auto_w = wm.addAction("Auto")
+        auto_w.setCheckable(True)
+        auto_w.setChecked(self._auto_width)
+        auto_w.triggered.connect(lambda checked: (setattr(self, "_auto_width", checked), self.canvas.update()))
+        wg.addAction(auto_w)
         for w in [1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0]:
             a = wm.addAction(f"{w}x")
             a.setCheckable(True)
-            a.setChecked(abs(w - self._width_gain) < 0.01)
-            a.triggered.connect(lambda checked, v=w: (setattr(self, "_width_gain", v), self.canvas.update()))
+            a.setChecked(not self._auto_width and abs(w - self._width_gain) < 0.01)
+            a.triggered.connect(lambda checked, v=w: (setattr(self, "_auto_width", False), setattr(self, "_width_gain", v), self.canvas.update()))
             wg.addAction(a)
 
         tm = tm_sub.addMenu("Trace Style")
@@ -274,28 +285,44 @@ class StereometerModule(BaseModule):
         r_raw = data[:, 1].copy() if data.shape[1] > 1 else data[:, 0].copy()
         
         # 1. Apply Width Gain (Mid/Side processing)
-        if self._width_gain != 1.0:
-            mid = (l_raw + r_raw) * 0.5
-            side = (l_raw - r_raw) * 0.5 * self._width_gain
-            l_proc = mid + side
-            r_proc = mid - side
+        mid_raw = (l_raw + r_raw) * 0.5
+        side_raw = (l_raw - r_raw) * 0.5
+
+        if self._auto_width:
+            abs_m = np.abs(mid_raw)
+            abs_s = np.abs(side_raw)
+            p_mid = float(np.percentile(abs_m, 95)) if len(abs_m) > 64 else float(np.max(abs_m))
+            p_side = float(np.percentile(abs_s, 95)) if len(abs_s) > 64 else float(np.max(abs_s))
+            if p_mid > 0.005 and p_side > 0.001:
+                target_w = float(np.clip(p_mid / (p_side * 1.6), 1.0, 5.0))
+            else:
+                target_w = 1.0
+            alpha_w = 0.25 if target_w < self._auto_width_gain else 0.08
+            self._auto_width_gain += (target_w - self._auto_width_gain) * alpha_w
+            active_width = self._auto_width_gain
+        else:
+            active_width = self._width_gain
+
+        if active_width != 1.0:
+            side = side_raw * active_width
+            l_proc = mid_raw + side
+            r_proc = mid_raw - side
         else:
             l_proc, r_proc = l_raw, r_raw
 
         self._left_xy = l_proc - float(np.mean(l_proc))
         self._right_xy = r_proc - float(np.mean(r_proc))
 
-        # 2. Apply Custom Tukey Window (Very thin margin FFT window style)
-        # This prevents sharp jumps at the edges of the buffer
-        cache_key = (n, self._window_alpha)
-        if cache_key in self._window_cache:
-            win = self._window_cache[cache_key]
+        self._left = l_proc
+        self._right = r_proc
+
+        if self._color_mode.startswith("Multi-Band"):
+            self._bands_l = self._multiband.split(self._left)
+            self._bands_r = self._multiband.split(self._right)
         else:
-            win = _tukey_window(n, self._window_alpha)
-            self._window_cache[cache_key] = win
-            
-        self._left = (l_proc * win)
-        self._right = (r_proc * win)
+            self._bands_l = None
+            self._bands_r = None
+
         if self._auto_zoom:
             if self._display_mode == "XY Oscilloscope":
                 self._update_auto_zoom(self._left_xy, self._right_xy)
@@ -328,9 +355,15 @@ class StereometerModule(BaseModule):
         if len(left) < 2:
             return
 
-        if self._display_mode == "Vectorscope":
-            dx = (left - right) * 0.5
+        if self._display_mode in ("Vectorscope", "Scaled", "Linear"):
+            dx = (right - left) * 0.5
             dy = (left + right) * 0.5
+            if self._display_mode == "Scaled":
+                r = np.sqrt(dx * dx + dy * dy)
+                r_safe = np.maximum(r, 1e-7)
+                scale = np.power(r_safe, 0.8) / r_safe
+                dx = dx * scale
+                dy = dy * scale
         elif self._display_mode == "XY Oscilloscope":
             dx = left
             dy = right
@@ -430,7 +463,7 @@ class StereometerModule(BaseModule):
                 painter.setFont(self.get_responsive_font(Fonts.small, f_size + 4, f_size, text))
                 painter.drawText(QRectF(lx - 15, ly - 10, 30, 20), Qt.AlignCenter, text)
 
-            if self._display_mode == "Vectorscope":
+            if self._display_mode in ("Vectorscope", "Scaled", "Linear"):
                 draw_rot_text("M", -90)
                 if not self._halved_view: draw_rot_text("M", 90)
                 draw_rot_text("S", 0)
@@ -563,8 +596,11 @@ class StereometerModule(BaseModule):
             return
 
         if self._color_mode.startswith("Multi-Band"):
-            low_l, mid_l, high_l = self._multiband.split(left)
-            low_r, mid_r, high_r = self._multiband.split(right)
+            if self._bands_l is None or self._bands_r is None:
+                self._bands_l = self._multiband.split(left)
+                self._bands_r = self._multiband.split(right)
+            low_l, mid_l, high_l = self._bands_l
+            low_r, mid_r, high_r = self._bands_r
             cols = ["#FF3333", "#33FF33", "#3388FF"] if self._color_mode == "Multi-Band (RGB)" else [Colors.BAND_LOW, Colors.BAND_MID, Colors.BAND_HIGH]
             for bl, br, col in zip([low_l, mid_l, high_l], [low_r, mid_r, high_r], cols):
                 self._draw_trace(painter, bl, br, cx, cy, radius, QColor(col), 160)
@@ -618,10 +654,20 @@ class StereometerModule(BaseModule):
         painter.save()
         painter.setOpacity(alpha / 255.0)
 
-        if self._display_mode == "Vectorscope":
-            # 1. Vectorscope (Point Cloud) - Shows Stereo Density
-            dx = (l_seg - r_seg) * 0.5
+        if self._display_mode in ("Vectorscope", "Scaled", "Linear"):
+            # 1. Vectorscope / Scaled Point Cloud - Shows Stereo Density
+            # Standard M/S: Left on left (-), Right on right (+)
+            dx = (r_seg - l_seg) * 0.5
             dy = (l_seg + r_seg) * 0.5
+
+            if self._display_mode == "Scaled":
+                # Radial (polar) expansion: preserves exact angle theta so the cloud/ring
+                # expands uniformly without splitting into 4 quadrants along the crosshairs
+                r = np.sqrt(dx * dx + dy * dy)
+                r_safe = np.maximum(r, 1e-7)
+                scale = np.power(r_safe, 0.8) / r_safe
+                dx = dx * scale
+                dy = dy * scale
             
             # Limiting to Guide Map (Default to Rhombus even if None)
             if self._guide_mode == "Circle":
