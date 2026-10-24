@@ -497,14 +497,31 @@ class MainWindow(QMainWindow):
         self.title_bar.gear_btn.clicked.connect(self._show_gear_menu)
         self.title_bar.move_btn.clicked.connect(self._toggle_move_mode)
 
-        # Apply window settings
-        
-        # Apply window settings
+        # Performance Profiler HUD
+        self._perf_hud = None
+        from PySide6.QtGui import QKeySequence, QShortcut
+        self._perf_shortcut = QShortcut(QKeySequence("Ctrl+F3"), self)
+        self._perf_shortcut.activated.connect(self.toggle_perf_hud)
+        self._perf_shortcut_f3 = QShortcut(QKeySequence("F3"), self)
+        self._perf_shortcut_f3.activated.connect(self.toggle_perf_hud)
+
+        # Window & AppBar settings
         win_s = self._settings.get("window", {})
-        if "width" in win_s and "height" in win_s:
-            self.resize(win_s["width"], win_s["height"])
-        if "x" in win_s and "y" in win_s:
-            self.move(win_s["x"], win_s["y"])
+        self._appbar_edge = win_s.get("appbar_edge", "right")
+        self._appbar_saved = win_s.get("appbar_active", False)
+        self._appbar_ignore_screenshot_resets = win_s.get("appbar_ignore_screenshot_resets", True)
+        self._appbar_active = False # Will be restored in finish_loading or docked early
+        self._appbar_registered_hwnd = None
+
+        raw_w = win_s.get("width", 320)
+        raw_h = win_s.get("height", 600)
+        raw_x = win_s.get("x")
+        raw_y = win_s.get("y")
+        x, y, w, h = self.sanitize_window_geometry(raw_x, raw_y, raw_w, raw_h, self._appbar_edge)
+        self.resize(w, h)
+        self.move(x, y)
+        self._last_valid_normal_pos = (x, y)
+        self._last_valid_normal_size = (w, h)
         
         self._layout_vertical = win_s.get("vertical_layout", True)
         if not self._layout_vertical:
@@ -525,11 +542,6 @@ class MainWindow(QMainWindow):
         
         self._show_headers = win_s.get("show_headers", True)
         self._auto_hide_ui = win_s.get("auto_hide_ui", False)
-        self._appbar_edge = win_s.get("appbar_edge", "right")
-        self._appbar_saved = win_s.get("appbar_active", False)
-        self._appbar_ignore_screenshot_resets = win_s.get("appbar_ignore_screenshot_resets", True)
-        self._appbar_active = False # Will be restored in finish_loading or docked early
-        self._appbar_registered_hwnd = None
         self._appbar_callback_msg = 0
         self._appbar_taskbar_msg = 0
         self._appbar_repair_pending = False
@@ -855,6 +867,12 @@ class MainWindow(QMainWindow):
         export_act.triggered.connect(self._export_profile)
         import_act = profile_menu.addAction("Load Profile from JSON...")
         import_act.triggered.connect(self._import_profile)
+
+        menu.addSeparator()
+        perf_act = menu.addAction("Performance Profiler (Ctrl+F3)")
+        perf_act.setCheckable(True)
+        perf_act.setChecked(self._perf_hud is not None and self._perf_hud.isVisible())
+        perf_act.triggered.connect(self.toggle_perf_hud)
         
         self.hold_ghost_ui()
         try:
@@ -906,6 +924,50 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Profile Load Failed", f"Could not apply profile:\n{e}")
 
+    def toggle_perf_hud(self):
+        """Toggle the standalone performance diagnostics window."""
+        if self._perf_hud is None:
+            from app.utils.perf_hud import PerformanceHUD
+            self._perf_hud = PerformanceHUD()
+            self._position_perf_hud()
+            self._perf_hud.show()
+            self._perf_hud.raise_()
+            self._perf_hud.activateWindow()
+        elif self._perf_hud.isVisible():
+            self._perf_hud.hide()
+        else:
+            self._perf_hud.show()
+            self._perf_hud.raise_()
+            self._perf_hud.activateWindow()
+
+    def _position_perf_hud(self):
+        if not self._perf_hud:
+            return
+        screen = self.screen() or QApplication.primaryScreen()
+        if not screen:
+            return
+        avail = screen.availableGeometry()
+        hud_w = self._perf_hud.width()
+        hud_h = self._perf_hud.height()
+
+        # Place adjacent to main window without covering it
+        edge = getattr(self, "_appbar_edge", "right")
+        if edge == "right" or self.pos().x() > avail.center().x():
+            target_x = max(avail.left() + 20, self.pos().x() - hud_w - 20)
+        elif edge == "left":
+            target_x = min(avail.right() - hud_w - 20, self.pos().x() + self.width() + 20)
+        else:
+            target_x = avail.left() + max(20, (avail.width() - hud_w) // 2)
+
+        if edge == "top":
+            target_y = min(avail.bottom() - hud_h - 20, self.pos().y() + self.height() + 20)
+        elif edge == "bottom":
+            target_y = max(avail.top() + 20, self.pos().y() - hud_h - 20)
+        else:
+            target_y = max(avail.top() + 30, min(avail.bottom() - hud_h - 30, self.pos().y() + 40))
+
+        self._perf_hud.move(target_x, target_y)
+
     def _apply_profile_settings(self, settings: dict):
         if getattr(self, "_move_mode_active", False):
             self._toggle_move_mode(False)
@@ -926,10 +988,16 @@ class MainWindow(QMainWindow):
         self._appbar_saved = win_s.get("appbar_active", False)
         self._appbar_active = False
 
-        if "width" in win_s and "height" in win_s:
-            self.resize(win_s["width"], win_s["height"])
-        if "x" in win_s and "y" in win_s:
-            self.move(win_s["x"], win_s["y"])
+        if "width" in win_s or "height" in win_s or "x" in win_s or "y" in win_s:
+            raw_w = win_s.get("width", self.width())
+            raw_h = win_s.get("height", self.height())
+            raw_x = win_s.get("x", self.pos().x())
+            raw_y = win_s.get("y", self.pos().y())
+            x, y, w, h = self.sanitize_window_geometry(raw_x, raw_y, raw_w, raw_h, self._appbar_edge)
+            self.resize(w, h)
+            self.move(x, y)
+            self._last_valid_normal_pos = (x, y)
+            self._last_valid_normal_size = (w, h)
 
         self._layout_vertical = win_s.get("vertical_layout", True)
         self.splitter.setOrientation(Qt.Vertical if self._layout_vertical else Qt.Horizontal)
@@ -1262,21 +1330,34 @@ class MainWindow(QMainWindow):
             import ctypes.wintypes as wt
 
             msg = wt.MSG.from_address(int(message))
+            WM_ACTIVATE = 0x0006
+            WM_ACTIVATEAPP = 0x001C
             WM_SETTINGCHANGE = 0x001A
             WM_DISPLAYCHANGE = 0x007E
-            if self._appbar_taskbar_msg and msg.message == self._appbar_taskbar_msg:
+            WM_POWERBROADCAST = 0x0218
+
+            if msg.message in (WM_ACTIVATE, WM_ACTIVATEAPP):
+                if int(msg.wParam) != 0:
+                    self._rescue_window_if_offscreen()
+            elif msg.message == WM_POWERBROADCAST:
+                QTimer.singleShot(1500, self._on_display_or_power_changed)
+            elif self._appbar_taskbar_msg and msg.message == self._appbar_taskbar_msg:
                 self._schedule_appbar_repair(delay=1000, force_register=True)
             elif self._appbar_callback_msg and msg.message == self._appbar_callback_msg:
                 self._handle_appbar_callback(int(msg.wParam), int(msg.lParam))
-            elif (
-                getattr(self, "_appbar_active", False)
-                and not getattr(self, "_appbar_fullscreen_active", False)
-                and msg.message in (WM_SETTINGCHANGE, WM_DISPLAYCHANGE)
-            ):
-                self._schedule_appbar_repair(delay=1200, force_register=True)
+            elif msg.message in (WM_SETTINGCHANGE, WM_DISPLAYCHANGE):
+                QTimer.singleShot(1200, self._on_display_or_power_changed)
         except Exception:
             return False, 0
         return False, 0
+
+    def _on_display_or_power_changed(self):
+        """Handle screen resolution changes or waking from sleep."""
+        if getattr(self, "_appbar_active", False) or getattr(self, "_appbar_saved", False):
+            if not getattr(self, "_appbar_fullscreen_active", False):
+                self._schedule_appbar_repair(delay=0, force_register=True)
+        else:
+            self._rescue_window_if_offscreen()
 
     def _is_snipping_tool_active(self):
         import sys
@@ -1352,6 +1433,8 @@ class MainWindow(QMainWindow):
 
     def _verify_appbar(self):
         if not getattr(self, "_appbar_active", False):
+            if self.pos().x() <= -5000 or self.pos().y() <= -5000:
+                self._rescue_window_if_offscreen()
             self._stop_appbar_watchdog()
             return
         if getattr(self, "_appbar_fullscreen_active", False):
@@ -1363,7 +1446,10 @@ class MainWindow(QMainWindow):
             return
 
         self._appbar_health_failures += 1
-        if self._appbar_health_failures >= 2:
+        if self._appbar_health_failures >= 4:
+            self._rescue_window_if_offscreen()
+            self._appbar_health_failures = 0
+        elif self._appbar_health_failures >= 2:
             self._schedule_appbar_deep_repair(delay=250)
         else:
             self._schedule_appbar_repair(delay=0, force_register=True)
@@ -1401,6 +1487,9 @@ class MainWindow(QMainWindow):
             return True
         if not self.isVisible():
             return False
+        geom = self.geometry()
+        if geom.x() <= -5000 or geom.y() <= -5000:
+            return False
         if not self._appbar_geometry_matches():
             return False
         import sys
@@ -1415,6 +1504,9 @@ class MainWindow(QMainWindow):
         return True
 
     def _appbar_geometry_matches(self):
+        current = self.geometry()
+        if current.x() <= -5000 or current.y() <= -5000:
+            return False
         rect = self._appbar_last_rect or self.geometry()
         current = self.geometry()
         tolerance = 3
@@ -1487,10 +1579,16 @@ class MainWindow(QMainWindow):
         """Dock the window to the chosen screen edge."""
         import sys
         
-        screen = self.screen() or QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
+        if self.pos().x() <= -5000 or self.pos().y() <= -5000:
+            screen = QApplication.primaryScreen()
+        else:
+            screen = self.screen() or QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
         if not screen: return
         sg = screen.geometry()
+        if sg.width() <= 0 or sg.height() <= 0:
+            return
         thickness = self.width() if self._appbar_edge in ("left", "right") else self.height()
+        thickness = max(40, thickness)
         
         if self._appbar_edge == "left":
             target_rect = QRect(sg.left(), sg.top(), thickness, sg.height())
@@ -1502,14 +1600,14 @@ class MainWindow(QMainWindow):
             target_rect = QRect(sg.left(), sg.bottom() - thickness + 1, sg.width(), thickness)
             
         if sys.platform == "win32":
-            self._apply_appbar_win32(thickness, sg)
+            self._apply_appbar_win32(thickness, sg, target_rect)
         else:
             self.setGeometry(target_rect)
             if sys.platform == "linux":
                 # Ensure xprop runs AFTER setGeometry so the window is mapped
                 QTimer.singleShot(100, lambda: self._apply_appbar_linux(target_rect))
 
-    def _apply_appbar_win32(self, thickness, sg):
+    def _apply_appbar_win32(self, thickness, sg, target_rect):
         try:
             import ctypes
             import ctypes.wintypes as wt
@@ -1587,6 +1685,9 @@ class MainWindow(QMainWindow):
 
             final_rect = QRect(abd.rc.left, abd.rc.top,
                                abd.rc.right - abd.rc.left, abd.rc.bottom - abd.rc.top)
+            if final_rect.width() <= 10 or final_rect.height() <= 10:
+                final_rect = target_rect
+
             self._appbar_last_rect = QRect(final_rect)
             
             # Whiplash back to the reserved space
@@ -1597,14 +1698,21 @@ class MainWindow(QMainWindow):
                 self._set_appbar_topmost(True)
             shell32.SHAppBarMessage(ABM_WINDOWPOSCHANGED, ctypes.byref(abd))
             self._appbar_health_failures = 0
-            self._appbar_applying = False
             
         except Exception as e:
-            self._appbar_applying = False
             logging.error(f"AppBar: Failed to dock (Win32): {e}")
-            self._appbar_active = False
-            self._stop_appbar_watchdog()
-            self._update_appbar_ui()
+            self._appbar_health_failures += 1
+            self.setGeometry(target_rect)
+            self.show()
+            if self._appbar_health_failures >= 4:
+                self._release_appbar_win32(restore_window=True)
+                self.setGeometry(target_rect)
+                self.show()
+        finally:
+            self._appbar_applying = False
+            if self.pos().x() <= -5000 or self.pos().y() <= -5000:
+                self.setGeometry(target_rect)
+                self.show()
 
     def _apply_appbar_linux(self, rect):
         import subprocess
@@ -1665,6 +1773,7 @@ class MainWindow(QMainWindow):
             if restore_window:
                 self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
                 self.show()
+                self._rescue_window_if_offscreen()
         except Exception as e:
             print(f"[AppBar] Failed to release (Win32): {e}")
 
@@ -1900,10 +2009,124 @@ class MainWindow(QMainWindow):
             self.resize(w, h)
         self.move(x, y)
 
+    #  Window Geometry Sanitization & Recovery
+
+    @classmethod
+    def is_rect_visible_on_any_screen(cls, rect: QRect, min_overlap: int = 20) -> bool:
+        """Check if a QRect has sufficient visible overlap on any connected screen."""
+        if rect.x() <= -5000 or rect.y() <= -5000 or rect.width() <= 0 or rect.height() <= 0:
+            return False
+        app = QApplication.instance()
+        screens = app.screens() if app else []
+        if not screens:
+            return True
+        for s in screens:
+            inter = rect.intersected(s.geometry())
+            req_w = min(min_overlap, max(5, rect.width() // 2))
+            req_h = min(min_overlap, max(5, rect.height() // 2))
+            if inter.width() >= req_w and inter.height() >= req_h:
+                return True
+        return False
+
+    @classmethod
+    def sanitize_window_geometry(cls, x, y, w, h, default_edge="right"):
+        """Clamp window position and dimensions to safe, visible coordinates."""
+        min_w = MODULE_MIN_WIDTH
+        min_h = MODULE_MIN_HEIGHT
+        w = max(min_w, min(int(w or 320), 7680))
+        h = max(min_h, min(int(h or 600), 4320))
+
+        app = QApplication.instance()
+        screen = app.primaryScreen() if app else None
+        avail = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
+
+        if x is None or y is None:
+            if default_edge == "left":
+                return avail.left(), avail.top(), w, avail.height()
+            elif default_edge == "right":
+                return avail.right() - w + 1, avail.top(), w, avail.height()
+            elif default_edge == "top":
+                return avail.left(), avail.top(), avail.width(), h
+            elif default_edge == "bottom":
+                return avail.left(), avail.bottom() - h + 1, avail.width(), h
+            else:
+                return (
+                    avail.left() + max(0, (avail.width() - w) // 2),
+                    avail.top() + max(0, (avail.height() - h) // 2),
+                    w,
+                    h,
+                )
+
+        try:
+            x = int(x)
+            y = int(y)
+        except (ValueError, TypeError):
+            x = avail.right() - w + 1
+            y = avail.top()
+
+        target_rect = QRect(x, y, w, h)
+        if cls.is_rect_visible_on_any_screen(target_rect):
+            return x, y, w, h
+
+        # If offscreen or limbo, place safely on primary screen
+        if default_edge == "right":
+            return avail.right() - w + 1, avail.top(), w, min(h, avail.height())
+        elif default_edge == "left":
+            return avail.left(), avail.top(), w, min(h, avail.height())
+        elif default_edge == "top":
+            return avail.left(), avail.top(), min(w, avail.width()), h
+        elif default_edge == "bottom":
+            return avail.left(), avail.bottom() - h + 1, min(w, avail.width()), h
+        else:
+            return (
+                avail.left() + max(0, (avail.width() - w) // 2),
+                avail.top() + max(0, (avail.height() - h) // 2),
+                min(w, avail.width()),
+                min(h, avail.height()),
+            )
+
+    def _rescue_window_if_offscreen(self):
+        """Immediately pull window back to a visible screen if stuck in off-screen limbo."""
+        if getattr(self, "_appbar_applying", False) or self.isMinimized():
+            return
+        x, y = self.pos().x(), self.pos().y()
+        w, h = self.width(), self.height()
+        if x <= -5000 or y <= -5000 or not self.is_rect_visible_on_any_screen(QRect(x, y, w, h)):
+            logging.warning(f"WindowManager: Window was offscreen at ({x}, {y}). Rescuing to screen.")
+            if getattr(self, "_appbar_active", False) or getattr(self, "_appbar_saved", False):
+                self._appbar_active = True
+                self._apply_appbar()
+            else:
+                nx, ny, nw, nh = self.sanitize_window_geometry(x, y, w, h, self._appbar_edge)
+                self.setGeometry(nx, ny, nw, nh)
+                self.showNormal()
+                self.raise_()
+                self.activateWindow()
+
     #  Events
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        x, y = self.pos().x(), self.pos().y()
+        if (
+            not self.isMinimized()
+            and x > -5000
+            and y > -5000
+            and not getattr(self, "_appbar_applying", False)
+            and self.is_rect_visible_on_any_screen(self.geometry())
+        ):
+            self._last_valid_normal_pos = (x, y)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        w, h = self.width(), self.height()
+        if (
+            not self.isMinimized()
+            and self.pos().x() > -5000
+            and not getattr(self, "_appbar_applying", False)
+        ):
+            self._last_valid_normal_size = (w, h)
+
         self._grip.move(
             self.width() - self._grip.width() - 2,
             self.height() - self._grip.height() - 2,
@@ -1924,6 +2147,17 @@ class MainWindow(QMainWindow):
                 self._appbar_resize_timer.setSingleShot(True)
                 self._appbar_resize_timer.timeout.connect(self._apply_appbar)
             self._appbar_resize_timer.start(200)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        from PySide6.QtCore import QEvent
+        if event.type() in (QEvent.ActivationChange, QEvent.WindowStateChange):
+            if not self.isMinimized():
+                self._rescue_window_if_offscreen()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._rescue_window_if_offscreen()
 
     def _on_overlay_finished(self):
         self._loading_overlay = None
@@ -1969,17 +2203,47 @@ class MainWindow(QMainWindow):
 
     def _gather_settings(self):
         """Prepare all current settings in a dictionary for saving."""
+        cur_x = self.pos().x()
+        cur_y = self.pos().y()
+        cur_w = self.width()
+        cur_h = self.height()
+
+        if (
+            self.isMinimized()
+            or cur_x <= -5000
+            or cur_y <= -5000
+            or getattr(self, "_appbar_applying", False)
+            or not self.is_rect_visible_on_any_screen(QRect(cur_x, cur_y, cur_w, cur_h))
+        ):
+            if hasattr(self, "_last_valid_normal_pos") and self._last_valid_normal_pos:
+                save_x, save_y = self._last_valid_normal_pos
+            elif "x" in self._settings.get("window", {}) and self._settings["window"]["x"] > -5000:
+                save_x = self._settings["window"]["x"]
+                save_y = self._settings["window"]["y"]
+            else:
+                save_x, save_y, _, _ = self.sanitize_window_geometry(cur_x, cur_y, cur_w, cur_h, self._appbar_edge)
+
+            if hasattr(self, "_last_valid_normal_size") and self._last_valid_normal_size:
+                save_w, save_h = self._last_valid_normal_size
+            else:
+                save_w, save_h = cur_w, cur_h
+        else:
+            save_x, save_y = cur_x, cur_y
+            save_w, save_h = cur_w, cur_h
+
+        is_appbar_active = getattr(self, "_appbar_active", False) or getattr(self, "_appbar_saved", False)
+
         return {
             "window": {
-                "x": self.pos().x(),
-                "y": self.pos().y(),
-                "width": self.width(),
-                "height": self.height(),
+                "x": save_x,
+                "y": save_y,
+                "width": save_w,
+                "height": save_h,
                 "vertical_layout": self._layout_vertical,
                 "show_headers": self._show_headers,
                 "auto_hide_ui": self._auto_hide_ui,
                 "appbar_edge": self._appbar_edge,
-                "appbar_active": self._appbar_active,
+                "appbar_active": is_appbar_active,
                 "appbar_ignore_screenshot_resets": getattr(self, "_appbar_ignore_screenshot_resets", True),
                 "divider_width": getattr(self, "_divider_width", self.splitter.handleWidth()),
                 "divider_opacity": self._settings.get("window", {}).get("divider_opacity", 100)
@@ -2002,6 +2266,7 @@ class MainWindow(QMainWindow):
     def _periodic_save(self):
         """Autosave settings in the background."""
         if self._is_ready: # Only save once fully loaded
+            self._rescue_window_if_offscreen()
             # Gathering must happen on the main thread as it accesses UI components
             settings = self._gather_settings()
             
@@ -2014,6 +2279,12 @@ class MainWindow(QMainWindow):
         """Handle application exit: Save settings and try clean quit."""
         if hasattr(self, "_autosave_timer") and self._autosave_timer:
             self._autosave_timer.stop()
+
+        if hasattr(self, "_perf_hud") and self._perf_hud:
+            try:
+                self._perf_hud.close()
+            except Exception:
+                pass
 
         settings = self._gather_settings()
         SettingsManager.save(settings)

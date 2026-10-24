@@ -39,6 +39,7 @@ class StereometerModule(BaseModule):
         self._guide_mode = "Rhombus"
         self._zoom = 1.0
         self._auto_zoom = True
+        self._auto_zoom_mode = "Padded"
         self._auto_zoom_value = 1.0
         self._trace_style = "Persistence"
         self._show_labels = True
@@ -51,17 +52,17 @@ class StereometerModule(BaseModule):
         self._auto_width = True
         self._auto_width_gain = 1.0
         self._persistence = 0.5 
-        self._max_dots = 1024
+        self._max_dots = 2048
         self._bands_l = None
         self._bands_r = None
         self._buffer = None
         self._scope_pixmap = None
         self._scope_pixmap_key = None
         
-        self._left = np.zeros(1024, dtype=np.float32)
-        self._right = np.zeros(1024, dtype=np.float32)
-        self._left_xy = np.zeros(1024, dtype=np.float32)
-        self._right_xy = np.zeros(1024, dtype=np.float32)
+        self._left = np.zeros(0, dtype=np.float32)
+        self._right = np.zeros(0, dtype=np.float32)
+        self._left_xy = np.zeros(0, dtype=np.float32)
+        self._right_xy = np.zeros(0, dtype=np.float32)
         self._corr = 0.0
         self._mb_corr = {"low": 0.0, "mid": 0.0, "high": 0.0, "overall": 0.0}
         self._multiband = MultiBandFilter(sample_rate=audio_engine.sample_rate)
@@ -71,6 +72,9 @@ class StereometerModule(BaseModule):
         super().__init__(audio_engine, title="Stereometer", parent=parent)
         self.canvas.set_render_func(self._render)
 
+    def on_theme_changed(self):
+        self._clear_scope_persistence()
+
     def get_settings(self):
         return {
             "display_mode": self._display_mode,
@@ -79,6 +83,7 @@ class StereometerModule(BaseModule):
             "guide_mode": self._guide_mode,
             "zoom": self._zoom,
             "auto_zoom": self._auto_zoom,
+            "auto_zoom_mode": self._auto_zoom_mode,
             "trace_style": self._trace_style,
             "width_gain": self._width_gain,
             "auto_width": self._auto_width,
@@ -96,6 +101,7 @@ class StereometerModule(BaseModule):
     _VALID_CORR_MODES = {"Single-Band", "Multi-Band"}
     _VALID_GUIDE_MODES = {"None", "Rhombus", "Circle", "Square"}
     _VALID_TRACE_STYLES = {"Persistence", "Instant"}
+    _VALID_AUTO_ZOOM_MODES = {"Padded", "Max"}
 
     def apply_settings(self, settings):
         dm = settings.get("display_mode", self._display_mode)
@@ -110,6 +116,8 @@ class StereometerModule(BaseModule):
         self._guide_mode = gm if gm in self._VALID_GUIDE_MODES else "Rhombus"
         self._zoom = float(settings.get("zoom", self._zoom))
         self._auto_zoom = bool(settings.get("auto_zoom", self._auto_zoom))
+        azm = settings.get("auto_zoom_mode", self._auto_zoom_mode)
+        self._auto_zoom_mode = azm if azm in self._VALID_AUTO_ZOOM_MODES else "Padded"
         ts = settings.get("trace_style", self._trace_style)
         self._trace_style = ts if ts in self._VALID_TRACE_STYLES else "Persistence"
         self._width_gain = float(settings.get("width_gain", self._width_gain))
@@ -207,11 +215,21 @@ class StereometerModule(BaseModule):
         tm_sub = menu.addMenu("Trace & Scaling")
         zm = tm_sub.addMenu("Zoom")
         zg = QActionGroup(self)
-        auto_zoom = zm.addAction("Auto")
-        auto_zoom.setCheckable(True)
-        auto_zoom.setChecked(self._auto_zoom)
-        auto_zoom.triggered.connect(lambda checked: self._set_auto_zoom(checked))
-        zg.addAction(auto_zoom)
+
+        a_padded = zm.addAction("Auto (Padded)")
+        a_padded.setCheckable(True)
+        a_padded.setChecked(self._auto_zoom and self._auto_zoom_mode == "Padded")
+        a_padded.triggered.connect(lambda checked: self._set_auto_zoom_mode("Padded"))
+        zg.addAction(a_padded)
+
+        a_max = zm.addAction("Auto (Max Zoom)")
+        a_max.setCheckable(True)
+        a_max.setChecked(self._auto_zoom and self._auto_zoom_mode == "Max")
+        a_max.triggered.connect(lambda checked: self._set_auto_zoom_mode("Max"))
+        zg.addAction(a_max)
+
+        zm.addSeparator()
+
         for z in [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0]:
             a = zm.addAction(f"{z}x")
             a.setCheckable(True)
@@ -259,6 +277,12 @@ class StereometerModule(BaseModule):
             a.setChecked(c == self._color_mode)
             a.triggered.connect(lambda checked, t=c: setattr(self, "_color_mode", t))
             cg.addAction(a)
+
+    def _set_auto_zoom_mode(self, mode):
+        self._auto_zoom = True
+        self._auto_zoom_mode = mode if mode in self._VALID_AUTO_ZOOM_MODES else "Padded"
+        self._clear_scope_persistence()
+        self.canvas.update()
 
     def _set_auto_zoom(self, enabled):
         self._auto_zoom = bool(enabled)
@@ -311,11 +335,31 @@ class StereometerModule(BaseModule):
         else:
             l_proc, r_proc = l_raw, r_raw
 
-        self._left_xy = l_proc - float(np.mean(l_proc))
-        self._right_xy = r_proc - float(np.mean(r_proc))
+        target_len = max(1024, self._max_dots)
+        n_in = len(l_proc)
+        l_xy = l_proc - float(np.mean(l_proc))
+        r_xy = r_proc - float(np.mean(r_proc))
 
-        self._left = l_proc
-        self._right = r_proc
+        if len(self._left) < target_len:
+            self._left = np.concatenate([self._left, l_proc])[-target_len:]
+            self._right = np.concatenate([self._right, r_proc])[-target_len:]
+            self._left_xy = np.concatenate([self._left_xy, l_xy])[-target_len:]
+            self._right_xy = np.concatenate([self._right_xy, r_xy])[-target_len:]
+        else:
+            if n_in >= target_len:
+                self._left = l_proc[-target_len:].copy()
+                self._right = r_proc[-target_len:].copy()
+                self._left_xy = l_xy[-target_len:].copy()
+                self._right_xy = r_xy[-target_len:].copy()
+            else:
+                self._left = np.roll(self._left, -n_in)
+                self._left[-n_in:] = l_proc
+                self._right = np.roll(self._right, -n_in)
+                self._right[-n_in:] = r_proc
+                self._left_xy = np.roll(self._left_xy, -n_in)
+                self._left_xy[-n_in:] = l_xy
+                self._right_xy = np.roll(self._right_xy, -n_in)
+                self._right_xy[-n_in:] = r_xy
 
         if self._color_mode.startswith("Multi-Band"):
             self._bands_l = self._multiband.split(self._left)
@@ -359,12 +403,6 @@ class StereometerModule(BaseModule):
         if self._display_mode in ("Vectorscope", "Scaled", "Linear"):
             dx = (right - left) * 0.5
             dy = (left + right) * 0.5
-            if self._display_mode == "Scaled":
-                r = np.sqrt(dx * dx + dy * dy)
-                r_safe = np.maximum(r, 1e-7)
-                scale = np.power(r_safe, 0.8) / r_safe
-                dx = dx * scale
-                dy = dy * scale
         elif self._display_mode == "XY Oscilloscope":
             dx = left
             dy = right
@@ -383,8 +421,11 @@ class StereometerModule(BaseModule):
         if peak < 0.0005:
             target = 1.0
         else:
-            target = 0.82 / peak
-            target = max(0.35, min(12.0, target))
+            if getattr(self, "_auto_zoom_mode", "Padded") == "Max":
+                target = 0.96 / peak
+            else:
+                target = 0.68 / peak
+            target = max(0.35, min(16.0, target))
 
         alpha = 0.35 if target < self._auto_zoom_value else 0.12
         self._auto_zoom_value += (target - self._auto_zoom_value) * alpha
@@ -592,8 +633,23 @@ class StereometerModule(BaseModule):
                 painter.drawRect(QRectF(cx - radius, cy - radius, radius * 2, radius * 2))
 
     def _draw_scope_traces(self, painter, left, right, cx, cy, radius):
+        n = len(left)
+        if n == 0:
+            return
+
         if self._display_mode == "XY Oscilloscope":
             self._draw_trace(painter, self._left_xy, self._right_xy, cx, cy, radius, QColor(Colors.ACCENT), 220)
+            return
+
+        peak = max(float(np.max(np.abs(left))), float(np.max(np.abs(right))))
+        if peak < 1e-4:
+            painter.save()
+            pen_core = QPen(QColor(Colors.ACCENT), 2.0)
+            pen_core.setCapStyle(Qt.RoundCap)
+            painter.setPen(pen_core)
+            painter.setOpacity(0.6)
+            painter.drawPoints([QPointF(cx, cy)])
+            painter.restore()
             return
 
         if self._color_mode.startswith("Multi-Band"):
@@ -609,6 +665,8 @@ class StereometerModule(BaseModule):
             self._draw_trace(painter, left, right, cx, cy, radius, QColor(Colors.ACCENT), 200)
 
     def _render_persistent_scope(self, w, h, scope_rect, cx, cy, radius):
+        if w <= 0 or h <= 0 or radius <= 0 or scope_rect.width() <= 0 or scope_rect.height() <= 0:
+            return
         key = (
             int(w),
             int(h),
@@ -631,7 +689,9 @@ class StereometerModule(BaseModule):
         if not p.isActive():
             return
         p.setRenderHint(QPainter.Antialiasing, True)
-        fade_alpha = 56 if self._color_mode.startswith("Multi-Band") else 44
+        fade_alpha = int(np.clip((1.0 - self._persistence) * 160.0 + 16.0, 12, 240))
+        if self._color_mode.startswith("Multi-Band"):
+            fade_alpha = int(np.clip(fade_alpha * 1.25, 16, 255))
         fade_color = QColor(Colors.BG_MODULE)
         fade_color.setAlpha(fade_alpha)
         p.fillRect(scope_rect, fade_color)
@@ -646,6 +706,19 @@ class StereometerModule(BaseModule):
 
     def _draw_trace(self, painter, left, right, cx, cy, radius, color, alpha):
         n = len(left)
+        if n == 0:
+            return
+        peak = max(float(np.max(np.abs(left))), float(np.max(np.abs(right))))
+        if peak < 1e-4:
+            painter.save()
+            pen_core = QPen(QColor(color), 2.0)
+            pen_core.setCapStyle(Qt.RoundCap)
+            painter.setPen(pen_core)
+            painter.setOpacity(alpha / 255.0)
+            painter.drawPoints([QPointF(cx, cy)])
+            painter.restore()
+            return
+
         step = max(1, n // self._max_dots)
         
         zoom = self._effective_zoom()
@@ -662,47 +735,59 @@ class StereometerModule(BaseModule):
             dy = (l_seg + r_seg) * 0.5
 
             if self._display_mode == "Scaled":
-                # Radial (polar) expansion: preserves exact angle theta so the cloud/ring
-                # expands uniformly without splitting into 4 quadrants along the crosshairs
+                # Smooth log companding: lifts quiet samples without creating a hole in the center
                 r = np.sqrt(dx * dx + dy * dy)
                 r_safe = np.maximum(r, 1e-7)
-                scale = np.power(r_safe, 0.8) / r_safe
+                scale = np.log10(1.0 + 9.0 * r_safe) / r_safe
                 dx = dx * scale
                 dy = dy * scale
             
-            # Limiting to Guide Map (Default to Rhombus even if None)
+            # Soft-knee limiting to Guide Map
             if self._guide_mode == "Circle":
                 mag = np.sqrt(dx**2 + dy**2)
-                mask = mag > 1.0
-                dx[mask] /= mag[mask]
-                dy[mask] /= mag[mask]
+                mask = mag > 0.96
+                if np.any(mask):
+                    soft_mag = 0.96 + 0.035 * np.tanh((mag[mask] - 0.96) / 0.15)
+                    scale = soft_mag / np.maximum(mag[mask], 1e-7)
+                    dx[mask] *= scale
+                    dy[mask] *= scale
             elif self._guide_mode == "Square":
-                mask = (np.abs(dx) > 1.0) | (np.abs(dy) > 1.0)
-                div = np.maximum(np.abs(dx[mask]), np.abs(dy[mask]))
-                dx[mask] /= div
-                dy[mask] /= div
+                mag = np.maximum(np.abs(dx), np.abs(dy))
+                mask = mag > 0.96
+                if np.any(mask):
+                    soft_mag = 0.96 + 0.035 * np.tanh((mag[mask] - 0.96) / 0.15)
+                    scale = soft_mag / np.maximum(mag[mask], 1e-7)
+                    dx[mask] *= scale
+                    dy[mask] *= scale
             else:
                 # Rhombus is the standard M/S boundary
                 mag = np.abs(dx) + np.abs(dy)
-                mask = mag > 1.0
-                dx[mask] /= mag[mask]
-                dy[mask] /= mag[mask]
+                mask = mag > 0.96
+                if np.any(mask):
+                    soft_mag = 0.96 + 0.035 * np.tanh((mag[mask] - 0.96) / 0.15)
+                    scale = soft_mag / np.maximum(mag[mask], 1e-7)
+                    dx[mask] *= scale
+                    dy[mask] *= scale
             
             xs = cx + dx * radius
             ys = cy - dy * radius
             
-            points = [QPointF(xs[i], ys[i]) for i in range(len(xs))]
+            points = [QPointF(float(x), float(y)) for x, y in zip(xs, ys)]
             if not points: 
                 painter.restore()
                 return
             
             # Glowing bloom pass (soft wider halo around dots)
-            painter.setPen(QPen(QColor(color), 3.0))
+            pen_bloom = QPen(QColor(color), 3.5)
+            pen_bloom.setCapStyle(Qt.RoundCap)
+            painter.setPen(pen_bloom)
             painter.setOpacity(alpha / 255.0 * 0.35)
             painter.drawPoints(points)
             
             # Luminous core point
-            painter.setPen(QPen(QColor(color), 1.5))
+            pen_core = QPen(QColor(color), 1.8)
+            pen_core.setCapStyle(Qt.RoundCap)
+            painter.setPen(pen_core)
             painter.setOpacity(alpha / 255.0)
             painter.drawPoints(points)
 
@@ -712,19 +797,24 @@ class StereometerModule(BaseModule):
 
             if self._guide_mode == "Circle":
                 mag = np.sqrt(dx**2 + dy**2)
-                mask = mag > 1.0
-                dx[mask] /= mag[mask]
-                dy[mask] /= mag[mask]
-            else:
-                mask = (np.abs(dx) > 1.0) | (np.abs(dy) > 1.0)
+                mask = mag > 0.96
                 if np.any(mask):
-                    div = np.maximum(np.abs(dx[mask]), np.abs(dy[mask]))
-                    dx[mask] /= div
-                    dy[mask] /= div
+                    soft_mag = 0.96 + 0.035 * np.tanh((mag[mask] - 0.96) / 0.15)
+                    scale = soft_mag / np.maximum(mag[mask], 1e-7)
+                    dx[mask] *= scale
+                    dy[mask] *= scale
+            else:
+                mag = np.maximum(np.abs(dx), np.abs(dy))
+                mask = mag > 0.96
+                if np.any(mask):
+                    soft_mag = 0.96 + 0.035 * np.tanh((mag[mask] - 0.96) / 0.15)
+                    scale = soft_mag / np.maximum(mag[mask], 1e-7)
+                    dx[mask] *= scale
+                    dy[mask] *= scale
 
             xs = cx + dx * radius
             ys = cy - dy * radius
-            points = [QPointF(xs[i], ys[i]) for i in range(len(xs))]
+            points = [QPointF(float(x), float(y)) for x, y in zip(xs, ys)]
             if len(points) < 2:
                 painter.restore()
                 return
@@ -748,28 +838,36 @@ class StereometerModule(BaseModule):
             dx = right[::step] * zoom
             dy = left[::step] * zoom
             
-            # Limiting to Guide Map (Default to Rhombus even if None)
+            # Limiting to Guide Map
             if self._guide_mode == "Circle":
                 mag = np.sqrt(dx**2 + dy**2)
-                mask = mag > 1.0
-                dx[mask] /= mag[mask]
-                dy[mask] /= mag[mask]
+                mask = mag > 0.96
+                if np.any(mask):
+                    soft_mag = 0.96 + 0.035 * np.tanh((mag[mask] - 0.96) / 0.15)
+                    scale = soft_mag / np.maximum(mag[mask], 1e-7)
+                    dx[mask] *= scale
+                    dy[mask] *= scale
             elif self._guide_mode == "Square":
-                # Square boundary
-                mask = (np.abs(dx) > 1.0) | (np.abs(dy) > 1.0)
-                dx[mask] /= np.maximum(np.abs(dx[mask]), np.abs(dy[mask]))
-                dy[mask] /= np.maximum(np.abs(dx[mask]), np.abs(dy[mask]))
+                mag = np.maximum(np.abs(dx), np.abs(dy))
+                mask = mag > 0.96
+                if np.any(mask):
+                    soft_mag = 0.96 + 0.035 * np.tanh((mag[mask] - 0.96) / 0.15)
+                    scale = soft_mag / np.maximum(mag[mask], 1e-7)
+                    dx[mask] *= scale
+                    dy[mask] *= scale
             else:
-                # Square/Rhombus boundary
                 mag = np.abs(dx) + np.abs(dy)
-                mask = mag > 1.0
-                dx[mask] /= mag[mask]
-                dy[mask] /= mag[mask]
+                mask = mag > 0.96
+                if np.any(mask):
+                    soft_mag = 0.96 + 0.035 * np.tanh((mag[mask] - 0.96) / 0.15)
+                    scale = soft_mag / np.maximum(mag[mask], 1e-7)
+                    dx[mask] *= scale
+                    dy[mask] *= scale
             
             xs = cx + dx * radius
             ys = cy - dy * radius
             
-            points = [QPointF(xs[i], ys[i]) for i in range(len(xs))]
+            points = [QPointF(float(x), float(y)) for x, y in zip(xs, ys)]
             if len(points) < 2: 
                 painter.restore()
                 return

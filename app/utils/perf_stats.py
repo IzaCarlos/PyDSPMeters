@@ -51,6 +51,17 @@ def set_enabled(enabled: bool) -> None:
             _last_event_at.clear()
 
 
+def is_enabled() -> bool:
+    return _enabled
+
+
+def reset() -> None:
+    with _lock:
+        _timings.clear()
+        _counters.clear()
+        _last_event_at.clear()
+
+
 def record_timing(name: str, seconds: float) -> None:
     if not _enabled:
         return

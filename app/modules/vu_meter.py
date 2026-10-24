@@ -29,16 +29,26 @@ VU_CHANNELS = ["L+R", "Left", "Right", "Mid", "Side"]
 class VUMeterModule(BaseModule):
 
     def __init__(self, audio_engine, parent=None):
-        self._needle_l = -40.0
-        self._needle_r = -40.0
-        self._target_l = -40.0
-        self._target_r = -40.0
+        self._pos_l = 0.0
+        self._pos_r = 0.0
+        self._vel_l = 0.0
+        self._vel_r = 0.0
+        self._needle_l = -20.0
+        self._needle_r = -20.0
+        self._target_l = -20.0
+        self._target_r = -20.0
         self._peak_lit_l = False
         self._peak_lit_r = False
         self._clip_lit_l = False
         self._clip_lit_r = False
+        self._peak_timer_l = 0.0
+        self._peak_timer_r = 0.0
+        self._clip_timer_l = 0.0
+        self._clip_timer_r = 0.0
+        self._ms_l = 1e-12
+        self._ms_r = 1e-12
         self._peak_threshold = -6.0
-        self._clip_threshold = 0.0
+        self._clip_threshold = -0.1
         self._cal_offset = 0.0
         self._channel = "L+R" if audio_engine.channels >= 2 else "Left"
         self._style = 0
@@ -148,57 +158,158 @@ class VUMeterModule(BaseModule):
         a.triggered.connect(lambda checked: setattr(self, "_show_clip", checked))
 
     def on_audio_data(self, data: np.ndarray):
-        l, r = data[:, 0], data[:, 1] if data.shape[1] > 1 else data[:, 0]
+        l = data[:, 0]
+        r = data[:, 1] if data.shape[1] > 1 else l
         
-        # Calculate targets
+        # Audio block duration in seconds for integration
+        sr = getattr(self.audio_engine, "sample_rate", 44100.0)
+        dt = float(len(data)) / float(sr) if sr > 0 else 0.02
+        
+        # Sample peak in dBFS (without calibration offset)
+        pk_l = float(np.max(np.abs(l))) if len(l) > 0 else 0.0
+        pk_r = float(np.max(np.abs(r))) if len(r) > 0 else 0.0
+        peak_dbfs_l = 20.0 * math.log10(max(pk_l, 1e-10))
+        peak_dbfs_r = 20.0 * math.log10(max(pk_r, 1e-10))
+        
+        # Peak & Clip LED triggers (with 180ms hold timer so flashes are clearly visible)
+        hold_time = 0.18
+        if peak_dbfs_l >= self._clip_threshold:
+            self._clip_timer_l = hold_time
+        else:
+            self._clip_timer_l = max(0.0, self._clip_timer_l - dt)
+
+        if peak_dbfs_r >= self._clip_threshold:
+            self._clip_timer_r = hold_time
+        else:
+            self._clip_timer_r = max(0.0, self._clip_timer_r - dt)
+
+        if peak_dbfs_l >= self._peak_threshold:
+            self._peak_timer_l = hold_time
+        else:
+            self._peak_timer_l = max(0.0, self._peak_timer_l - dt)
+
+        if peak_dbfs_r >= self._peak_threshold:
+            self._peak_timer_r = hold_time
+        else:
+            self._peak_timer_r = max(0.0, self._peak_timer_r - dt)
+
+        self._clip_lit_l = self._clip_timer_l > 0.0
+        self._clip_lit_r = self._clip_timer_r > 0.0
+        self._peak_lit_l = self._peak_timer_l > 0.0
+        self._peak_lit_r = self._peak_timer_r > 0.0
+
         if self._channel == "L+R":
-            rms_l = np.sqrt(np.mean(l ** 2))
-            rms_r = np.sqrt(np.mean(r ** 2))
-            target_l = 20.0 * np.log10(max(rms_l, 1e-10)) + self._cal_offset
-            target_r = 20.0 * np.log10(max(rms_r, 1e-10)) + self._cal_offset
-            self._target_l = max(-40.0, min(3.0, target_l))
-            self._target_r = max(-40.0, min(3.0, target_r))
+            curr_ms_l = float(np.mean(l ** 2)) if len(l) > 0 else 0.0
+            curr_ms_r = float(np.mean(r ** 2)) if len(r) > 0 else 0.0
             
-            # Ballistics
-            self._needle_l += (self._target_l - self._needle_l) * (self._rise_coeff if self._target_l > self._needle_l else self._fall_coeff)
-            self._needle_r += (self._target_r - self._needle_r) * (self._rise_coeff if self._target_r > self._needle_r else self._fall_coeff)
+            # Fast AC cycle smoothing (15ms window eliminates audio wave ripple without lag)
+            alpha_fast = 1.0 - math.exp(-dt / 0.015) if dt < 0.015 else 1.0
+            self._ms_l += (curr_ms_l - self._ms_l) * alpha_fast
+            self._ms_r += (curr_ms_r - self._ms_r) * alpha_fast
             
-            # Peak hold (for LED Bar style)
+            rms_l_db = 10.0 * math.log10(max(self._ms_l, 1e-10))
+            rms_r_db = 10.0 * math.log10(max(self._ms_r, 1e-10))
+            
+            target_l = max(-30.0, min(3.5, rms_l_db + self._cal_offset))
+            target_r = max(-30.0, min(3.5, rms_r_db + self._cal_offset))
+            self._target_l = target_l
+            self._target_r = target_r
+            
+            # Physical 2nd-order VU needle ballistics (ANSI C16.5 galvanometer)
+            f_target_l = max(0.0, min(1.05, (target_l + 20.0) / 23.0))
+            f_target_r = max(0.0, min(1.05, (target_r + 20.0) / 23.0))
+            
+            if getattr(self, "_rise_coeff", 0.30) >= 0.99:
+                self._pos_l = f_target_l
+                self._pos_r = f_target_r
+                self._vel_l = 0.0
+                self._vel_r = 0.0
+            else:
+                omega_n = 15.2
+                zeta = 0.70
+                accel_l = omega_n**2 * (f_target_l - self._pos_l) - 2.0 * zeta * omega_n * self._vel_l
+                accel_r = omega_n**2 * (f_target_r - self._pos_r) - 2.0 * zeta * omega_n * self._vel_r
+                self._vel_l += accel_l * dt
+                self._vel_r += accel_r * dt
+                self._pos_l += self._vel_l * dt
+                self._pos_r += self._vel_r * dt
+                
+                if self._pos_l <= 0.0:
+                    self._pos_l = 0.0
+                    self._vel_l = max(0.0, self._vel_l)
+                elif self._pos_l >= 1.05:
+                    self._pos_l = 1.05
+                    self._vel_l = min(0.0, self._vel_l)
+                    
+                if self._pos_r <= 0.0:
+                    self._pos_r = 0.0
+                    self._vel_r = max(0.0, self._vel_r)
+                elif self._pos_r >= 1.05:
+                    self._pos_r = 1.05
+                    self._vel_r = min(0.0, self._vel_r)
+                    
+            self._needle_l = self._pos_l * 23.0 - 20.0
+            self._needle_r = self._pos_r * 23.0 - 20.0
+            
+            # Peak hold (for LED Bar and Tape Deck styles)
+            decay_step = dt * 14.0
             if self._needle_l > self._peak_hold_l:
                 self._peak_hold_l = self._needle_l
             else:
-                self._peak_hold_l -= self._peak_hold_decay
+                self._peak_hold_l = max(-20.0, self._peak_hold_l - decay_step)
             if self._needle_r > self._peak_hold_r:
                 self._peak_hold_r = self._needle_r
             else:
-                self._peak_hold_r -= self._peak_hold_decay
-            
-            # Peak LEDs use instantaneous sample peaks; clip follows the displayed VU level.
-            peak_l = 20.0 * np.log10(max(np.max(np.abs(l)), 1e-10)) + self._cal_offset
-            peak_r = 20.0 * np.log10(max(np.max(np.abs(r)), 1e-10)) + self._cal_offset
-            self._peak_lit_l = peak_l > self._peak_threshold
-            self._peak_lit_r = peak_r > self._peak_threshold
-            self._clip_lit_l = self._needle_l >= self._clip_threshold
-            self._clip_lit_r = self._needle_r >= self._clip_threshold
+                self._peak_hold_r = max(-20.0, self._peak_hold_r - decay_step)
         else:
-            sig = {"Left": l, "Right": r, "Mid": (l+r)*0.5, "Side": (l-r)*0.5}.get(self._channel, l)
-            rms = np.sqrt(np.mean(sig ** 2))
-            db = 20.0 * np.log10(max(rms, 1e-10)) + self._cal_offset
-            target = max(-40.0, min(3.0, db))
+            sig = {"Left": l, "Right": r, "Mid": (l + r) * 0.5, "Side": (l - r) * 0.5}.get(self._channel, l)
+            curr_ms = float(np.mean(sig ** 2)) if len(sig) > 0 else 0.0
+            alpha_fast = 1.0 - math.exp(-dt / 0.015) if dt < 0.015 else 1.0
+            self._ms_l += (curr_ms - self._ms_l) * alpha_fast
+            self._ms_r = self._ms_l
+            
+            rms_db = 10.0 * math.log10(max(self._ms_l, 1e-10)) + self._cal_offset
+            target = max(-30.0, min(3.5, rms_db))
             self._target_l = self._target_r = target
-            self._needle_l += (target - self._needle_l) * (self._rise_coeff if target > self._needle_l else self._fall_coeff)
-            self._needle_r = self._needle_l
+            f_target = max(0.0, min(1.05, (target + 20.0) / 23.0))
+            
+            if getattr(self, "_rise_coeff", 0.30) >= 0.99:
+                self._pos_l = self._pos_r = f_target
+                self._vel_l = self._vel_r = 0.0
+            else:
+                omega_n = 15.2
+                zeta = 0.70
+                accel = omega_n**2 * (f_target - self._pos_l) - 2.0 * zeta * omega_n * self._vel_l
+                self._vel_l += accel * dt
+                self._pos_l += self._vel_l * dt
+                if self._pos_l <= 0.0:
+                    self._pos_l = 0.0
+                    self._vel_l = max(0.0, self._vel_l)
+                elif self._pos_l >= 1.05:
+                    self._pos_l = 1.05
+                    self._vel_l = min(0.0, self._vel_l)
+                self._pos_r = self._pos_l
+                self._vel_r = self._vel_l
+                
+            self._needle_l = self._needle_r = self._pos_l * 23.0 - 20.0
+            
+            # Mono / selected channel peak & clip LEDs
+            pk_sig = float(np.max(np.abs(sig))) if len(sig) > 0 else 0.0
+            peak_sig_dbfs = 20.0 * math.log10(max(pk_sig, 1e-10))
+            if peak_sig_dbfs >= self._clip_threshold:
+                self._clip_timer_l = self._clip_timer_r = hold_time
+            if peak_sig_dbfs >= self._peak_threshold:
+                self._peak_timer_l = self._peak_timer_r = hold_time
+            self._clip_lit_l = self._clip_lit_r = self._clip_timer_l > 0.0
+            self._peak_lit_l = self._peak_lit_r = self._peak_timer_l > 0.0
             
             # Peak hold
+            decay_step = dt * 14.0
             if self._needle_l > self._peak_hold_l:
                 self._peak_hold_l = self._needle_l
             else:
-                self._peak_hold_l -= self._peak_hold_decay
+                self._peak_hold_l = max(-20.0, self._peak_hold_l - decay_step)
             self._peak_hold_r = self._peak_hold_l
-            
-            peak = 20.0 * np.log10(max(np.max(np.abs(sig)), 1e-10)) + self._cal_offset
-            self._peak_lit_l = self._peak_lit_r = peak > self._peak_threshold
-            self._clip_lit_l = self._clip_lit_r = self._needle_l >= self._clip_threshold
 
     def _render(self, painter, w, h):
         if self._style == 2:

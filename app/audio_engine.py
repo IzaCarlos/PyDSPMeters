@@ -7,6 +7,7 @@ import sys
 import queue
 import logging
 import time
+import threading
 import numpy as np
 import sounddevice as sd
 from app.dsp import accel as dsp_accel
@@ -40,6 +41,7 @@ class AudioEngine(QObject):
         self._stream = None
         self._device = None
         self.gain_multiplier = 1.0
+        self._lock = threading.RLock()
 
         # Thread-safe queue for bridging callback → Qt main thread
         self._queue = queue.Queue(maxsize=200)
@@ -102,143 +104,160 @@ class AudioEngine(QObject):
         except Exception:
             return None
 
+    @staticmethod
+    def _cleanup_stream(stream):
+        """Safely abort and close a PortAudio stream."""
+        if stream is None:
+            return
+        try:
+            stream.abort()
+        except Exception:
+            pass
+        try:
+            stream.close()
+        except Exception:
+            pass
+
 
     def start(self, device_index: int | None = None, channels: int | None = None):
         """Start capturing audio from the given device."""
-        logging.info(f"Starting AudioEngine: device={device_index}, channels={channels}")
-        self.stop()
-        self._device = device_index
-        old_ch = self.channels
-        
-        # Get device info to validate parameters
-        try:
-            if device_index is None:
-                device_index = self.get_default_device()
-                if device_index is None:
-                    device_index = sd.default.device[0]
+        with self._lock:
+            logging.info(f"Starting AudioEngine: device={device_index}, channels={channels}")
+            self.stop()
+            self._device = device_index
+            old_ch = self.channels
             
-            info = sd.query_devices(device_index, "input")
-            max_ch = info.get("max_input_channels", 2)
-            dev_sr = info.get("default_samplerate", 44100)
-            host_api = sd.query_hostapis(info["hostapi"])["name"]
-            
-            logging.info(f"Targeting device: '{info['name']}' | HostAPI: {host_api} | Max Channels: {max_ch}")
-            
-            if channels is not None:
-                self.channels = min(channels, max_ch, 2)
-            else:
-                self.channels = min(self.channels, max_ch, 2)
-
-            if self.channels != old_ch:
-                buf_len = len(self.buffer)
-                self.buffer = np.zeros((buf_len, self.channels), dtype=np.float32)
-                self._write_pos = 0
-                self._total_written = 0
-                
-            # If our current sample rate is very different from device default, 
-            # and we haven't explicitly set it, maybe try to match?
-            # For now, we'll try our target rate first, then fall back.
-            target_rates = [self.sample_rate, int(dev_sr)]
-            if int(dev_sr) not in target_rates:
-                target_rates.append(int(dev_sr))
-        except Exception as e:
-            self.error_occurred.emit(f"Device query error: {e}")
-            return
-
-        last_err = None
-        for sr in target_rates:
+            # Get device info to validate parameters
             try:
-                # Try preferred channels (Mono/Stereo) first
-                self._stream = sd.InputStream(
-                    device=device_index,
-                    channels=self.channels,
-                    samplerate=sr,
-                    blocksize=self.block_size,
-                    dtype="float32",
-                    callback=self._audio_callback,
-                    latency="low",
-                )
-                self._stream.start()
-                self.sample_rate = sr
-                self._poll_timer.start()
-                logging.info(f"Stream started successfully at {sr}Hz, {self.channels}ch")
-                self.stream_started.emit()
-                return
+                if device_index is None:
+                    device_index = self.get_default_device()
+                    if device_index is None:
+                        device_index = sd.default.device[0]
+                
+                info = sd.query_devices(device_index, "input")
+                max_ch = info.get("max_input_channels", 2)
+                dev_sr = info.get("default_samplerate", 44100)
+                host_api = sd.query_hostapis(info["hostapi"])["name"]
+                
+                logging.info(f"Targeting device: '{info['name']}' | HostAPI: {host_api} | Max Channels: {max_ch}")
+                
+                if channels is not None:
+                    self.channels = min(channels, max_ch, 2)
+                else:
+                    self.channels = min(self.channels, max_ch, 2)
+
+                if self.channels != old_ch:
+                    buf_len = len(self.buffer)
+                    self.buffer = np.zeros((buf_len, self.channels), dtype=np.float32)
+                    self._write_pos = 0
+                    self._total_written = 0
+                    
+                # If our current sample rate is very different from device default, 
+                # and we haven't explicitly set it, maybe try to match?
+                # For now, we'll try our target rate first, then fall back.
+                target_rates = [self.sample_rate, int(dev_sr)]
+                if int(dev_sr) not in target_rates:
+                    target_rates.append(int(dev_sr))
             except Exception as e:
-                # Fallback: Some professional drivers (ASIO/MME) REFUSE to open 
-                # unless you request their exact native channel count.
-                # If 2 channels failed, try opening with the device's max_ch.
-                # Our DSP pipeline will automatically truncate this to 2 later.
+                self.error_occurred.emit(f"Device query error: {e}")
+                return
+
+            last_err = None
+            for sr in target_rates:
+                cand = None
                 try:
-                    self._stream = sd.InputStream(
+                    # Try preferred channels (Mono/Stereo) first
+                    cand = sd.InputStream(
                         device=device_index,
-                        channels=max_ch,
+                        channels=self.channels,
                         samplerate=sr,
                         blocksize=self.block_size,
                         dtype="float32",
                         callback=self._audio_callback,
                         latency="low",
                     )
-                    self._stream.start()
+                    cand.start()
+                    self._stream = cand
                     self.sample_rate = sr
                     self._poll_timer.start()
-                    logging.info(f"Stream started with fallback (native channels): {max_ch}ch at {sr}Hz")
+                    logging.info(f"Stream started successfully at {sr}Hz, {self.channels}ch")
                     self.stream_started.emit()
                     return
-                except:
-                    last_err = e
-                    continue
+                except Exception as e:
+                    self._cleanup_stream(cand)
+                    cand = None
+                    # Fallback: Some professional drivers (ASIO/MME) REFUSE to open 
+                    # unless you request their exact native channel count.
+                    # If 2 channels failed, try opening with the device's max_ch.
+                    # Our DSP pipeline will automatically truncate this to 2 later.
+                    try:
+                        cand = sd.InputStream(
+                            device=device_index,
+                            channels=max_ch,
+                            samplerate=sr,
+                            blocksize=self.block_size,
+                            dtype="float32",
+                            callback=self._audio_callback,
+                            latency="low",
+                        )
+                        cand.start()
+                        self._stream = cand
+                        self.sample_rate = sr
+                        self._poll_timer.start()
+                        logging.info(f"Stream started with fallback (native channels): {max_ch}ch at {sr}Hz")
+                        self.stream_started.emit()
+                        return
+                    except Exception as e2:
+                        self._cleanup_stream(cand)
+                        cand = None
+                        last_err = e2
+                        continue
 
-        # Last resort: Try absolute minimum (Mono) at device sample rate
-        try:
-            self.channels = 1
-            # Recreate buffer
-            buf_len = len(self.buffer)
-            self.buffer = np.zeros((buf_len, self.channels), dtype=np.float32)
-            self._write_pos = 0
-            self._total_written = 0
-            
-            self._stream = sd.InputStream(
-                device=device_index,
-                channels=1,
-                samplerate=int(dev_sr),
-                blocksize=self.block_size,
-                dtype="float32",
-                callback=self._audio_callback_mono,
-                latency="low",
-            )
-            self._stream.start()
-            self.sample_rate = int(dev_sr)
-            self._poll_timer.start()
-            self.stream_started.emit()
-        except Exception as e2:
-            err_msg = f"Audio error: {last_err or e2}"
-            logging.error(err_msg)
-            self.error_occurred.emit(err_msg)
+            # Last resort: Try absolute minimum (Mono) at device sample rate
+            cand = None
+            try:
+                self.channels = 1
+                # Recreate buffer
+                buf_len = len(self.buffer)
+                self.buffer = np.zeros((buf_len, self.channels), dtype=np.float32)
+                self._write_pos = 0
+                self._total_written = 0
+                
+                cand = sd.InputStream(
+                    device=device_index,
+                    channels=1,
+                    samplerate=int(dev_sr),
+                    blocksize=self.block_size,
+                    dtype="float32",
+                    callback=self._audio_callback_mono,
+                    latency="low",
+                )
+                cand.start()
+                self._stream = cand
+                self.sample_rate = int(dev_sr)
+                self._poll_timer.start()
+                self.stream_started.emit()
+            except Exception as e2:
+                self._cleanup_stream(cand)
+                err_msg = f"Audio error: {last_err or e2}"
+                logging.error(err_msg)
+                self.error_occurred.emit(err_msg)
 
     def stop(self):
         """Stop the audio stream (non-blocking)."""
-        self._poll_timer.stop()
-        if self._stream is not None:
-            try:
-                # Use abort() instead of stop() or close() to prevent hanging 
-                # the main thread during application exit.
-                self._stream.abort()
-            except Exception:
-                pass
-            self._stream = None
+        with self._lock:
+            self._poll_timer.stop()
+            if self._stream is not None:
+                self._cleanup_stream(self._stream)
+                self._stream = None
 
-        # Clean up fallback stream if active
-        if self._fallback_stream is not None:
-            try:
-                self._fallback_stream.abort()
-                self._fallback_stream.close()
-            except:
-                pass
-            self._fallback_stream = None
-        self._silence_counter = 0
+            # Clean up fallback stream if active
+            if self._fallback_stream is not None:
+                self._cleanup_stream(self._fallback_stream)
+                self._fallback_stream = None
+            self._silence_counter = 0
 
-        self.stream_stopped.emit()
+            self.stream_stopped.emit()
 
     def get_status_list(self) -> list[str]:
         """Return a list of status lines for the current stream."""
@@ -260,22 +279,27 @@ class AudioEngine(QObject):
 
     @property
     def is_running(self) -> bool:
-        return self._stream is not None and self._stream.active
+        with self._lock:
+            return self._stream is not None and getattr(self._stream, "active", False)
 
 
     def _audio_callback(self, indata, frames, time_info, status):
         """Sounddevice callback for stereo input."""
         try:
+            if indata is None or indata.size == 0:
+                return
             self._queue.put_nowait(indata.copy())
-        except queue.Full:
+        except (queue.Full, Exception):
             pass  # Drop oldest if queue full
 
     def _audio_callback_mono(self, indata, frames, time_info, status):
         """Sounddevice callback for mono input — duplicated to target channels."""
-        multi = np.tile(indata[:, 0:1], (1, self.channels))
         try:
+            if indata is None or indata.size == 0:
+                return
+            multi = np.tile(indata[:, 0:1], (1, self.channels))
             self._queue.put_nowait(multi)
-        except queue.Full:
+        except (queue.Full, Exception):
             pass
 
 
@@ -372,28 +396,26 @@ class AudioEngine(QObject):
         Maintains a silent output stream on Python 3.14 to prevent SoundDevice
         from hitting a CFFI bug that causes soft-crashes after long silence.
         """
-        if is_silent:
-            self._silence_counter += frames
-            # If silent for more than 1.5 seconds, ensure fallback is running
-            if self._silence_counter > int(self.sample_rate * 1.5):
-                if self._fallback_stream is None:
-                    try:
-                        # Start a dummy output stream. This keeps the PortAudio
-                        # backend active and prevents the 3.14 NoneType crash.
-                        self._fallback_stream = sd.OutputStream(
-                            samplerate=int(self.sample_rate),
-                            channels=1,
-                            callback=lambda outdata, f, t, s: outdata.fill(0)
-                        )
-                        self._fallback_stream.start()
-                    except:
-                        pass
-        else:
-            self._silence_counter = 0
-            if self._fallback_stream is not None:
-                try:
-                    self._fallback_stream.abort()
-                    self._fallback_stream.close()
-                except:
-                    pass
-                self._fallback_stream = None
+        with self._lock:
+            if is_silent:
+                self._silence_counter += frames
+                # If silent for more than 1.5 seconds, ensure fallback is running
+                if self._silence_counter > int(self.sample_rate * 1.5):
+                    if self._fallback_stream is None:
+                        try:
+                            # Start a dummy output stream. This keeps the PortAudio
+                            # backend active and prevents the 3.14 NoneType crash.
+                            stream = sd.OutputStream(
+                                samplerate=int(self.sample_rate),
+                                channels=1,
+                                callback=lambda outdata, f, t, s: outdata.fill(0)
+                            )
+                            stream.start()
+                            self._fallback_stream = stream
+                        except Exception:
+                            self._fallback_stream = None
+            else:
+                self._silence_counter = 0
+                if self._fallback_stream is not None:
+                    self._cleanup_stream(self._fallback_stream)
+                    self._fallback_stream = None

@@ -827,10 +827,18 @@ fn render_stereometer_rgba<'py>(
             dy = r_in[i] * zoom;
             if guide_mode == 1 {
                 let mag = (dx * dx + dy * dy).sqrt();
-                if mag > 1.0 { dx /= mag; dy /= mag; }
+                if mag > 0.96 {
+                    let soft_mag = 0.96 + 0.035 * ((mag - 0.96) / 0.15).tanh();
+                    let scale = soft_mag / mag.max(1e-7);
+                    dx *= scale; dy *= scale;
+                }
             } else if guide_mode == 2 {
                 let mag = dx.abs().max(dy.abs());
-                if mag > 1.0 { dx /= mag; dy /= mag; }
+                if mag > 0.96 {
+                    let soft_mag = 0.96 + 0.035 * ((mag - 0.96) / 0.15).tanh();
+                    let scale = soft_mag / mag.max(1e-7);
+                    dx *= scale; dy *= scale;
+                }
             }
         } else {
             // M/S Vectorscope modes
@@ -838,23 +846,35 @@ fn render_stereometer_rgba<'py>(
             dy = (l_in[i] + r_in[i]) * 0.5 * zoom;
 
             if display_mode == 1 {
-                // Scaled (polar expansion)
+                // Scaled (smooth logarithmic companding without origin hole)
                 let mag = (dx * dx + dy * dy).sqrt();
                 let mag_safe = mag.max(1e-7);
-                let scale = mag_safe.powf(0.8) / mag_safe;
+                let scale = (1.0 + 9.0 * mag_safe).log10() / mag_safe;
                 dx *= scale;
                 dy *= scale;
             }
 
             if guide_mode == 1 {
                 let mag = (dx * dx + dy * dy).sqrt();
-                if mag > 1.0 { dx /= mag; dy /= mag; }
+                if mag > 0.96 {
+                    let soft_mag = 0.96 + 0.035 * ((mag - 0.96) / 0.15).tanh();
+                    let scale = soft_mag / mag.max(1e-7);
+                    dx *= scale; dy *= scale;
+                }
             } else if guide_mode == 2 {
                 let mag = dx.abs().max(dy.abs());
-                if mag > 1.0 { dx /= mag; dy /= mag; }
+                if mag > 0.96 {
+                    let soft_mag = 0.96 + 0.035 * ((mag - 0.96) / 0.15).tanh();
+                    let scale = soft_mag / mag.max(1e-7);
+                    dx *= scale; dy *= scale;
+                }
             } else {
                 let mag = dx.abs() + dy.abs();
-                if mag > 1.0 { dx /= mag; dy /= mag; }
+                if mag > 0.96 {
+                    let soft_mag = 0.96 + 0.035 * ((mag - 0.96) / 0.15).tanh();
+                    let scale = soft_mag / mag.max(1e-7);
+                    dx *= scale; dy *= scale;
+                }
             }
         }
 

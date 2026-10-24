@@ -108,11 +108,14 @@ class RenderCanvas(QWidget):
         painter.fillRect(self.rect(), QColor(Colors.BG_MODULE))
         w, h = self.width(), self.height()
         if self._render_func and w > 0 and h > 0:
+            painter.save()
             try:
                 self._render_func(painter, w, h)
             except Exception:
                 import traceback
                 traceback.print_exc()
+            finally:
+                painter.restore()
         
         # Move Mode Overlay
         if getattr(self.parent(), "_move_mode", False):
@@ -234,7 +237,9 @@ class BaseModule(QWidget):
         self.update_theme()
         self.audio_engine.data_ready.connect(self._handle_audio_data)
         self._render_interval_ms = 16
-        self._render_pending = False
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.timeout.connect(self._flush_render_update)
         self._last_render_update = QElapsedTimer()
         self._last_render_update.start()
         self._async_audio_enabled = False
@@ -248,6 +253,10 @@ class BaseModule(QWidget):
         self.setStyleSheet(f"#baseModule {{ background: {Colors.BG_DARK}; border: 1px solid {Colors.BORDER}; border-radius: 4px; }}")
         if hasattr(self, "header"):
             self.header.update_theme()
+
+    def on_theme_changed(self):
+        """Hook called when the global color theme changes."""
+        pass
             
     def set_move_mode(self, enabled: bool):
         self._move_mode = enabled
@@ -507,13 +516,13 @@ class BaseModule(QWidget):
     def _request_render_update(self):
         elapsed = self._last_render_update.elapsed()
         if elapsed >= self._render_interval_ms:
+            if self._render_timer.isActive():
+                self._render_timer.stop()
             self._flush_render_update()
-        elif not self._render_pending:
-            self._render_pending = True
-            QTimer.singleShot(max(1, self._render_interval_ms - elapsed), self._flush_render_update)
+        elif not self._render_timer.isActive():
+            self._render_timer.start(max(1, self._render_interval_ms - elapsed))
 
     def _flush_render_update(self):
-        self._render_pending = False
         try:
             if self.canvas and self.canvas.isVisible():
                 self.canvas.update()
@@ -534,6 +543,7 @@ class BaseModule(QWidget):
         self._async_audio_closed = True
         self._async_audio_enabled = False
         self._async_audio_pending_data = None
+        self._render_timer.stop()
         try:
             self.audio_engine.data_ready.disconnect(self._handle_audio_data)
         except RuntimeError:

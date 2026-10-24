@@ -48,6 +48,27 @@ def test_start_stop_stream(mock_sd):
     engine.stop()
     assert engine._stream is None
     assert not engine.is_running
+    assert mock_sd.InputStream.return_value.abort.called
+    assert mock_sd.InputStream.return_value.close.called
+
+def test_cleanup_stream_safe():
+    AudioEngine._cleanup_stream(None)
+
+    mock_stream = MagicMock()
+    mock_stream.abort.side_effect = RuntimeError("Abort error")
+    mock_stream.close.side_effect = RuntimeError("Close error")
+    # Should not raise
+    AudioEngine._cleanup_stream(mock_stream)
+    assert mock_stream.abort.called
+    assert mock_stream.close.called
+
+def test_audio_callback_guards():
+    engine = AudioEngine()
+    engine._audio_callback(None, 0, None, 0)
+    engine._audio_callback(np.zeros(0, dtype=np.float32), 0, None, 0)
+    engine._audio_callback_mono(None, 0, None, 0)
+    engine._audio_callback_mono(np.zeros(0, dtype=np.float32), 0, None, 0)
+    assert engine._queue.empty()
 
 def test_drain_queue_emits_data():
     # This requires qtbot from pytest-qt if we want to check signals

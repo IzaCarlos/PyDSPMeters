@@ -2,7 +2,7 @@ import pytest
 import numpy as np
 from unittest.mock import MagicMock
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QRect
+from PySide6.QtCore import QRect, QPoint
 from PySide6.QtGui import QImage, QPainter
 from app.modules.loudness_meter import LoudnessModule
 from app.modules.vu_meter import VUMeterModule, VU_STYLE_NAMES
@@ -171,37 +171,76 @@ def test_loudness_modes_render_without_errors():
             module._render(painter, image.width(), image.height())
             painter.end()
 
-def test_vu_clip_led_follows_vu_zero_not_sample_peak():
+def test_vu_sample_peak_and_clip_accurate_dbfs():
+    engine = MockEngine()
+    module = VUMeterModule(engine)
+    module._rise_coeff = 1.0
+
+    # 1. Quiet audio at -12 dBFS (amplitude ~0.25)
+    t = np.arange(4096) / 44100.0
+    quiet = (0.25 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+    module.on_audio_data(np.column_stack([quiet, quiet]))
+    assert not module._peak_lit_l
+    assert not module._clip_lit_l
+
+    # 2. Moderate audio at -3 dBFS (amplitude ~0.707) with +10 calibration
+    # Peak LED should light (-3 >= -6 dBFS), but Clip LED MUST NOT light!
+    module._cal_offset = 10.0
+    mod = (0.70 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+    module.on_audio_data(np.column_stack([mod, mod]))
+    assert module._peak_lit_l
+    assert not module._clip_lit_l
+
+    # 3. Audio hitting 0 dBFS (amplitude 1.0)
+    # Clip LED must light up
+    loud = np.ones((1024, 2), dtype=np.float32)
+    module.on_audio_data(loud)
+    assert module._clip_lit_l
+    assert module._clip_lit_r
+
+def test_vu_calibration_shifts_needle_without_distorting_clip():
     engine = MockEngine()
     module = VUMeterModule(engine)
     module._rise_coeff = 1.0
 
     t = np.arange(4096) / 44100.0
-    tone = np.sin(2 * np.pi * 1000 * t).astype(np.float32)
+    tone = (0.5 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
     stereo = np.column_stack([tone, tone])
 
+    module._cal_offset = 0.0
     module.on_audio_data(stereo)
+    needle_0 = module._needle_l
 
-    assert module._needle_l < 0.0
-    assert module._needle_r < 0.0
-    assert module._peak_lit_l
-    assert module._peak_lit_r
+    module._cal_offset = 5.0
+    module.on_audio_data(stereo)
+    needle_5 = module._needle_l
+
+    # Needle at +5 cal offset should be ~5 dB higher than at 0
+    assert needle_5 > needle_0 + 3.0
+    # Still not clipped (amplitude was only 0.5 = -6 dBFS)
     assert not module._clip_lit_l
-    assert not module._clip_lit_r
 
-def test_vu_clip_led_lights_at_vu_zero():
+def test_vu_meter_mechanical_ballistics_response_time():
     engine = MockEngine()
     module = VUMeterModule(engine)
-    module._rise_coeff = 1.0
+    module._rise_coeff = 0.30
 
-    stereo = np.ones((1024, 2), dtype=np.float32)
+    sr = 44100
+    t = np.arange(1024) / float(sr)
+    block = (0.707 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+    stereo = np.column_stack([block, block])
 
-    module.on_audio_data(stereo)
+    for _ in range(14):
+        module.on_audio_data(stereo)
 
-    assert module._needle_l == 0.0
-    assert module._needle_r == 0.0
-    assert module._clip_lit_l
-    assert module._clip_lit_r
+    # In ~300ms, needle should reach the target -6 dB level within 0.5 dB
+    assert abs(module._needle_l - (-6.02)) < 0.5
+
+    silence = np.zeros((1024, 2), dtype=np.float32)
+    for _ in range(14):
+        module.on_audio_data(silence)
+
+    assert module._needle_l < -18.0
 
 def test_vu_settings_coerce_malformed_user_values():
     engine = MockEngine()
@@ -288,6 +327,95 @@ def test_stereometer_auto_zoom_expands_quiet_phase_cloud():
     module._update_auto_zoom(left, right)
 
     assert module._effective_zoom() > 1.0
+
+def test_stereometer_auto_zoom_max_vs_padded():
+    engine = MockEngine()
+    module = StereometerModule(engine)
+    module._auto_zoom_value = 1.0
+
+    left = np.full(512, 0.5, dtype=np.float32)
+    right = np.full(512, 0.5, dtype=np.float32)
+
+    module._set_auto_zoom_mode("Padded")
+    for _ in range(15):
+        module._update_auto_zoom(left, right)
+    padded_zoom = module._effective_zoom()
+
+    module._set_auto_zoom_mode("Max")
+    for _ in range(15):
+        module._update_auto_zoom(left, right)
+    max_zoom = module._effective_zoom()
+
+    # Max zoom targets 0.96 / peak whereas Padded targets 0.68 / peak
+    assert max_zoom > padded_zoom
+
+    # Verify settings persistence
+    settings = module.get_settings()
+    assert settings["auto_zoom_mode"] == "Max"
+    module.apply_settings({"auto_zoom_mode": "Padded"})
+    assert module._auto_zoom_mode == "Padded"
+
+def test_stereometer_max_mode_and_scaled_render_cleanly():
+    engine = MockEngine()
+    module = StereometerModule(engine)
+    module._set_auto_zoom_mode("Max")
+
+    # Signal with silence and low-amplitude noise
+    t = np.linspace(0, 1.0, 512, dtype=np.float32)
+    left = 0.05 * np.sin(2 * np.pi * 440 * t)
+    right = 0.05 * np.cos(2 * np.pi * 440 * t)
+    module.on_audio_data(np.column_stack([left, right]))
+
+    for mode in ["Linear", "Scaled", "Lissajous"]:
+        module._display_mode = mode
+        image = QImage(200, 200, QImage.Format_ARGB32)
+        image.fill(0)
+        painter = QPainter(image)
+        module._render(painter, image.width(), image.height())
+        painter.end()
+
+def test_stereometer_mono_is_continuous_line_without_center_gap():
+    engine = MockEngine()
+    module = StereometerModule(engine)
+    module._set_auto_zoom_mode("Max")
+    module._auto_zoom_value = 1.0
+
+    # Mono sine wave crossing zero
+    t = np.linspace(0, 1.0, 512, dtype=np.float32)
+    tone = np.sin(2 * np.pi * 5 * t).astype(np.float32)
+
+    captured_points = []
+    class MockPainter:
+        def save(self): pass
+        def restore(self): pass
+        def setOpacity(self, o): pass
+        def setPen(self, p): pass
+        def drawPoints(self, pts):
+            captured_points.extend(pts)
+
+    module._draw_trace(MockPainter(), tone, tone, 100.0, 100.0, 100.0, "#FFFFFF", 255)
+    assert len(captured_points) > 0
+
+    # In mono: dx = (R - L) / 2 = 0, so all points lie along x = 100.0
+    for pt in captured_points:
+        assert abs(pt.x() - 100.0) < 1e-4
+
+    # The line must be continuous near the center (100.0, 100.0), with zero-crossings present
+    distances = [abs(pt.y() - 100.0) for pt in captured_points]
+    assert min(distances) < 2.0
+
+def test_stereometer_rolling_buffer_preserves_dot_density():
+    engine = MockEngine()
+    module = StereometerModule(engine)
+    module._max_dots = 2048
+
+    for i in range(4):
+        block = np.full((512, 2), float(i), dtype=np.float32)
+        module.on_audio_data(block)
+
+    assert len(module._left) == 2048
+    assert module._left[0] == 0.0
+    assert module._left[-1] == 3.0
 
 def test_stereometer_xy_mode_ac_centers_trace():
     engine = MockEngine()
@@ -483,6 +611,121 @@ def test_appbar_health_detects_hidden_or_geometry_mismatch():
     assert MainWindow._appbar_health_ok(ok_win)
     assert not MainWindow._appbar_health_ok(hidden_win)
     assert not MainWindow._appbar_health_ok(moved_win)
+
+def test_appbar_health_detects_offscreen_limbo():
+    class DummyWindow:
+        def __init__(self, geom):
+            self._appbar_active = True
+            self._appbar_last_rect = geom
+            self._appbar_registered_hwnd = None
+            self._geom = geom
+
+        def isVisible(self):
+            return True
+
+        def geometry(self):
+            return self._geom
+
+        def winId(self):
+            return 0
+
+        def _appbar_geometry_matches(self):
+            return MainWindow._appbar_geometry_matches(self)
+
+    offscreen_win = DummyWindow(geom=QRect(-10000, -10000, 40, 600))
+    assert not MainWindow._appbar_geometry_matches(offscreen_win)
+    assert not MainWindow._appbar_health_ok(offscreen_win)
+
+def test_sanitize_window_geometry_clamps_offscreen_limbo():
+    x, y, w, h = MainWindow.sanitize_window_geometry(-10000, -10000, 320, 600)
+    assert x > -5000
+    assert y >= 0
+    assert w >= 40
+    assert h >= 40
+
+    x, y, w, h = MainWindow.sanitize_window_geometry(None, None, 320, 600, default_edge="right")
+    assert x > -5000
+    assert y >= 0
+
+    x, y, w, h = MainWindow.sanitize_window_geometry("bad", "bad", 320, 600)
+    assert x > -5000
+    assert y >= 0
+
+    x, y, w, h = MainWindow.sanitize_window_geometry(-10000, -10000, 1920, 100, default_edge="top")
+    assert x >= 0
+    assert y >= 0
+    assert h == 100
+    assert MainWindow.is_rect_visible_on_any_screen(QRect(0, 0, 1920, 100))
+
+def test_gather_settings_never_saves_offscreen_or_minimized():
+    class DummySplitter:
+        def handleWidth(self):
+            return 4
+        def sizes(self):
+            return []
+
+    class DummyAudioEngine:
+        gain_multiplier = 1.0
+        channels = 2
+
+    class DummyAppWindow:
+        def __init__(self, x, y, minimized=False, appbar_applying=False):
+            self._pos = QPoint(x, y)
+            self._minimized = minimized
+            self._appbar_applying = appbar_applying
+            self._appbar_active = True
+            self._appbar_saved = True
+            self._last_valid_normal_pos = (500, 200)
+            self._last_valid_normal_size = (320, 600)
+            self._layout_vertical = True
+            self._show_headers = True
+            self._auto_hide_ui = False
+            self._appbar_edge = "right"
+            self._settings = {"window": {}, "ui": {}}
+            self._modules = []
+            self.splitter = DummySplitter()
+            self.audio_engine = DummyAudioEngine()
+            self._current_device = None
+
+        def pos(self):
+            return self._pos
+
+        def geometry(self):
+            return QRect(self._pos.x(), self._pos.y(), 320, 600)
+
+        def width(self):
+            return 320
+
+        def height(self):
+            return 600
+
+        def isMinimized(self):
+            return self._minimized
+
+        def is_rect_visible_on_any_screen(self, rect):
+            return MainWindow.is_rect_visible_on_any_screen(rect)
+
+        def sanitize_window_geometry(self, x, y, w, h, default_edge="right"):
+            return MainWindow.sanitize_window_geometry(x, y, w, h, default_edge)
+
+    # Case 1: Window stuck at (-10000, -10000)
+    win1 = DummyAppWindow(-10000, -10000)
+    s1 = MainWindow._gather_settings(win1)
+    assert s1["window"]["x"] == 500
+    assert s1["window"]["y"] == 200
+    assert s1["window"]["appbar_active"] is True
+
+    # Case 2: Window minimized (-32000, -32000)
+    win2 = DummyAppWindow(-32000, -32000, minimized=True)
+    s2 = MainWindow._gather_settings(win2)
+    assert s2["window"]["x"] == 500
+    assert s2["window"]["y"] == 200
+
+    # Case 3: Window in the middle of appbar docking
+    win3 = DummyAppWindow(100, 100, appbar_applying=True)
+    s3 = MainWindow._gather_settings(win3)
+    assert s3["window"]["x"] == 500
+    assert s3["window"]["y"] == 200
 
 def test_oscilloscope_find_trigger_anchors_to_latest_audio():
     engine = MockEngine()
@@ -687,5 +930,50 @@ def test_spectrum_settings_persistence():
     assert new_mod._tilt == -3.0
     assert new_mod._show_scale is False
     assert new_mod._f_max_mode == "Nyquist (Fs/2)"
+
+
+def test_stereometer_idle_render_fast():
+    from PySide6.QtGui import QImage, QPainter
+    engine = MockEngine()
+    module = StereometerModule(engine)
+    module._left = np.zeros(2048, dtype=np.float32)
+    module._right = np.zeros(2048, dtype=np.float32)
+    
+    img = QImage(300, 300, QImage.Format_ARGB32)
+    p = QPainter(img)
+    try:
+        module._render(p, 300, 300)
+    finally:
+        p.end()
+
+
+def test_spectrum_idle_render_skips_spline():
+    from PySide6.QtGui import QImage, QPainter
+    engine = MockEngine()
+    module = SpectrumModule(engine)
+    # Silence: smoothed buffers are at default -120 dB
+    img = QImage(400, 200, QImage.Format_ARGB32)
+    p = QPainter(img)
+    try:
+        module._render(p, 400, 200)
+    finally:
+        p.end()
+
+
+def test_stereometer_and_spectrum_zero_dim_safety():
+    from PySide6.QtGui import QImage, QPainter
+    engine = MockEngine()
+    stereo = StereometerModule(engine)
+    spec = SpectrumModule(engine)
+    img = QImage(10, 10, QImage.Format_ARGB32)
+    p = QPainter(img)
+    try:
+        stereo._render(p, 0, 0)
+        spec._render(p, 0, 0)
+        stereo._render(p, -5, -5)
+        spec._render(p, -5, -5)
+    finally:
+        p.end()
+
 
 

@@ -48,7 +48,6 @@ class SpectrumModule(BaseModule):
 
     def on_theme_changed(self):
         self._grid_pixmap = None
-        super().on_theme_changed()
 
     def _get_f_max(self):
         sr = getattr(self.audio_engine, "sample_rate", 44100.0)
@@ -249,7 +248,8 @@ class SpectrumModule(BaseModule):
         has_bins = peak > -119.0
         out = np.where(has_bins, np.maximum(base, peak), base)
         
-        kernel = np.array([0.2, 0.6, 0.2], dtype=np.float32)
+        # Smooth high-frequency bin transitions so anti-aliasing / codec cliffs don't droop abruptly
+        kernel = np.array([0.25, 0.50, 0.25], dtype=np.float32)
         smooth = np.convolve(out, kernel, mode='same')
         smooth[0], smooth[-1] = out[0], out[-1]
         out = np.maximum(smooth, out)
@@ -337,12 +337,16 @@ class SpectrumModule(BaseModule):
             self._smooth_peak_db = -120.0
 
     def _recast_grid(self, w: int, h: int):
+        if w <= 0 or h <= 0:
+            return
         from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QPainterPath
         from PySide6.QtCore import Qt, QRectF
         
         pixmap = QPixmap(w, h)
         pixmap.fill(Qt.transparent)
         p = QPainter(pixmap)
+        if not p.isActive():
+            return
         p.setRenderHint(QPainter.Antialiasing, True)
         
         is_vertical = getattr(self, "_orientation", "Horizontal") == "Vertical"
@@ -372,24 +376,26 @@ class SpectrumModule(BaseModule):
             if gf > f_max:
                 continue
             px = map_frequencies_to_pixels(np.array([gf], dtype=np.float64), dw, scale, f_min=f_min, f_max=f_max)[0]
-            if 0 < px < dw - 2:
+            if 0 < px <= dw:
                 p.setPen(QPen(QColor(Colors.GRID), 1, Qt.DotLine))
                 if is_vertical:
-                    py = h - px
+                    py = min(h - 1, max(1, h - px))
                     p.drawLine(0, int(py), int(dh), int(py))
                     if h > 100:
                         lb = f"{gf}" if gf < 1000 else f"{gf//1000}k"
                         p.setFont(self.get_responsive_font(Fonts.small, mb, 14, lb))
-                        self.draw_text_badge(p, QRectF(dh + 2, py - 7, mb - 4, 14), Qt.AlignLeft | Qt.AlignVCenter, lb, QColor(Colors.TEXT_DIM))
+                        self.draw_text_badge(p, QRectF(dh + 2, min(py - 7, h - 16), mb - 4, 14), Qt.AlignLeft | Qt.AlignVCenter, lb, QColor(Colors.TEXT_DIM))
                 else:
-                    p.drawLine(int(px), 0, int(px), int(dh))
+                    draw_x = min(int(px), int(dw - 1))
+                    p.drawLine(draw_x, 0, draw_x, int(dh))
                     if w > 100:
                         lb = f"{gf}" if gf < 1000 else f"{gf//1000}k"
                         from PySide6.QtGui import QFontMetrics
                         fm = QFontMetrics(Fonts.small())
                         tw = fm.horizontalAdvance(lb) + 12
                         p.setFont(self.get_responsive_font(Fonts.small, tw, 14, lb))
-                        self.draw_text_badge(p, QRectF(px - tw/2, dh + 2, tw, 14), Qt.AlignCenter, lb, QColor(Colors.TEXT_DIM))
+                        badge_x = max(2, min(px - tw / 2, dw - tw - 2))
+                        self.draw_text_badge(p, QRectF(badge_x, dh + 2, tw, 14), Qt.AlignCenter, lb, QColor(Colors.TEXT_DIM))
 
         # 2. Amplitude grid lines (curved upwards with tilt)
         n_pts = max(10, int(dw // 4))
@@ -473,11 +479,14 @@ class SpectrumModule(BaseModule):
         self._grid_pixmap = pixmap
 
     def _render(self, painter, w, h):
+        if w <= 0 or h <= 0:
+            return
         from PySide6.QtCore import QSize
         if self._grid_pixmap is None or self._grid_pixmap.size() != QSize(w, h):
             self._recast_grid(w, h)
             
-        painter.drawPixmap(0, 0, self._grid_pixmap)
+        if self._grid_pixmap:
+            painter.drawPixmap(0, 0, self._grid_pixmap)
 
         is_vertical = getattr(self, "_orientation", "Horizontal") == "Vertical"
         if getattr(self, "_orientation", "Horizontal") == "Auto":
@@ -491,16 +500,36 @@ class SpectrumModule(BaseModule):
         else:
             dh = h - mb
             dw = w
-            
-        freqs = fft_frequencies(self._fft_size, self.audio_engine.sample_rate)
+
+        if dw <= 0 or dh <= 0:
+            return
+
+        sr = getattr(self.audio_engine, "sample_rate", 44100.0)
         f_max = self._get_f_max()
-        mask = (freqs >= 20.0) & (freqs <= f_max)
-        px_x = map_frequencies_to_pixels(freqs[mask], dw, self._scale, f_min=20.0, f_max=f_max)
+        cache_key = (self._fft_size, int(sr), int(dw), self._scale, float(f_max))
+        if getattr(self, "_freq_cache_key", None) != cache_key:
+            freqs = fft_frequencies(self._fft_size, sr)
+            mask = (freqs >= 20.0) & (freqs <= f_max)
+            px_x = map_frequencies_to_pixels(freqs[mask], dw, self._scale, f_min=20.0, f_max=f_max)
+            self._freq_cache_key = cache_key
+            self._cached_freqs = freqs
+            self._cached_mask = mask
+            self._cached_px_x = px_x
+        else:
+            freqs = self._cached_freqs
+            mask = self._cached_mask
+            px_x = self._cached_px_x
+
         mag_l_filtered = self._smoothed_l[mask]
         mag_r_filtered = self._smoothed_r[mask]
         nb = len(px_x)
-
         if nb < 2:
+            return
+
+        peak_db = max(float(np.max(mag_l_filtered)), float(np.max(mag_r_filtered)))
+        if peak_db <= -89.0:
+            # Idle / silence: below the -90 dB baseline.
+            # Skip resampling, cubic spline generation, and fill paths completely!
             return
 
         screen_x = np.arange(int(dw), dtype=np.float32)
@@ -540,7 +569,8 @@ class SpectrumModule(BaseModule):
                     painter.fillRect(QRectF(xs + 1, dh - bh, bw, bh), QBrush(col))
 
         if self._mode in ("FFT", "Both"):
-            step = max(1, len(screen_x) // max(2, min(1400, int(dw) * 2)))
+            target_pts = min(350, max(60, int(dw) // 3))
+            step = max(1, len(screen_x) // target_pts)
             pts_max, pts_min = [], []
             for i in range(0, len(screen_x), step):
                 frac_max = max(0, min(1, (mag_max_screen[i] - db_min) / (db_max - db_min)))

@@ -33,6 +33,10 @@ class OscilloscopeModule(BaseModule):
         super().__init__(audio_engine, title="Oscilloscope", parent=parent)
         self.canvas.set_render_func(self._render)
 
+    def on_theme_changed(self):
+        self._grid_pixmap = None
+        self._last_grid_key = None
+
     def get_settings(self):
         return {
             "display_samples": self._display_samples,
