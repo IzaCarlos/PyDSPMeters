@@ -142,7 +142,7 @@ class CustomSplashScreen(QSplashScreen):
             f.setPointSize(8)
             p.setFont(f)
             p.setPen(QColor(Colors.BORDER_ACCENT))
-            p.drawText(rect.adjusted(0, 0, -15, -15), Qt.AlignBottom | Qt.AlignRight, "v1.2.10.0")
+            p.drawText(rect.adjusted(0, 0, -15, -15), Qt.AlignBottom | Qt.AlignRight, "v1.2.11.0")
 
             # Status (placed ABOVE progress bar)
             p.setPen(QColor(Colors.TEXT_DIM))

@@ -777,16 +777,8 @@ class StereometerModule(BaseModule):
                 painter.restore()
                 return
             
-            # Glowing bloom pass (soft wider halo around dots)
-            pen_bloom = QPen(QColor(color), 3.5)
-            pen_bloom.setCapStyle(Qt.RoundCap)
-            painter.setPen(pen_bloom)
-            painter.setOpacity(alpha / 255.0 * 0.35)
-            painter.drawPoints(points)
-            
-            # Luminous core point
-            pen_core = QPen(QColor(color), 1.8)
-            pen_core.setCapStyle(Qt.RoundCap)
+            # Crisp phosphor point cloud (1.0px native antialiasing prevents heavy CPU polygon expansion)
+            pen_core = QPen(QColor(color), 1.0)
             painter.setPen(pen_core)
             painter.setOpacity(alpha / 255.0)
             painter.drawPoints(points)
@@ -819,18 +811,10 @@ class StereometerModule(BaseModule):
                 painter.restore()
                 return
 
-            # Glowing bloom pass
-            pen_glow = QPen(QColor(color), 3.0)
-            pen_glow.setJoinStyle(Qt.RoundJoin)
-            painter.setPen(pen_glow)
-            painter.setOpacity(alpha / 255.0 * 0.35)
-            painter.drawPolyline(points)
-
-            # Luminous core beam pass
-            pen_core = QPen(QColor(color), 1.5)
-            pen_core.setJoinStyle(Qt.RoundJoin)
+            # Luminous core beam pass (1.0px MiterJoin avoids CPU polygon expansion)
+            pen_core = QPen(QColor(color), 1.0)
+            pen_core.setJoinStyle(Qt.MiterJoin)
             painter.setPen(pen_core)
-            painter.setOpacity(alpha / 255.0)
             painter.drawPolyline(points)
             
         else:
@@ -872,18 +856,10 @@ class StereometerModule(BaseModule):
                 painter.restore()
                 return
             
-            # Glow / bloom pass
-            pen_glow = QPen(QColor(color), 3.0)
-            pen_glow.setJoinStyle(Qt.RoundJoin)
-            painter.setPen(pen_glow)
-            painter.setOpacity(alpha / 255.0 * 0.35)
-            painter.drawPolyline(points)
-            
-            # Luminous core beam pass
-            pen_core = QPen(QColor(color), 1.5)
-            pen_core.setJoinStyle(Qt.RoundJoin)
+            # Luminous core beam pass (1.0px MiterJoin avoids CPU polygon expansion)
+            pen_core = QPen(QColor(color), 1.0)
+            pen_core.setJoinStyle(Qt.MiterJoin)
             painter.setPen(pen_core)
-            painter.setOpacity(alpha / 255.0)
             painter.drawPolyline(points)
             
         painter.restore()

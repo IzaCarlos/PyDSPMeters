@@ -40,6 +40,7 @@ class SpectrumModule(BaseModule):
         self._speed = 1.0
         self._tilt = 4.5  # dB/octave tilt for balance
         self._show_scale = True
+        self._show_inactive_line = True
         self._f_max_mode = "20 kHz"
         self._grid_pixmap = None
         self.module_key = "spectrum"
@@ -98,6 +99,7 @@ class SpectrumModule(BaseModule):
             "speed": self._speed,
             "tilt": self._tilt,
             "show_scale": self._show_scale,
+            "show_inactive_line": getattr(self, "_show_inactive_line", True),
             "f_max_mode": self._f_max_mode,
         }
 
@@ -113,6 +115,7 @@ class SpectrumModule(BaseModule):
         self._speed = float(settings.get("speed", self._speed))
         self._tilt = float(settings.get("tilt", self._tilt))
         self._show_scale = bool(settings.get("show_scale", self._show_scale))
+        self._show_inactive_line = bool(settings.get("show_inactive_line", getattr(self, "_show_inactive_line", True)))
         self._f_max_mode = settings.get("f_max_mode", self._f_max_mode)
         self._grid_pixmap = None
 
@@ -164,6 +167,11 @@ class SpectrumModule(BaseModule):
         a_scale.setCheckable(True)
         a_scale.setChecked(self._show_scale)
         a_scale.triggered.connect(lambda checked: self._set_show_scale(checked))
+
+        a_line = dnm.addAction("Inactive Baseline")
+        a_line.setCheckable(True)
+        a_line.setChecked(getattr(self, "_show_inactive_line", True))
+        a_line.triggered.connect(lambda checked: setattr(self, "_show_inactive_line", checked))
 
         # FFT & Response
         frm = menu.addMenu("FFT & Response")
@@ -528,8 +536,12 @@ class SpectrumModule(BaseModule):
 
         peak_db = max(float(np.max(mag_l_filtered)), float(np.max(mag_r_filtered)))
         if peak_db <= -89.0:
-            # Idle / silence: below the -90 dB baseline.
-            # Skip resampling, cubic spline generation, and fill paths completely!
+            if getattr(self, "_show_inactive_line", True):
+                painter.setPen(QPen(QColor(Colors.ACCENT), 1.0))
+                if is_vertical:
+                    painter.drawLine(0, 0, 0, h)
+                else:
+                    painter.drawLine(0, int(dh), int(dw), int(dh))
             return
 
         screen_x = np.arange(int(dw), dtype=np.float32)
@@ -594,68 +606,47 @@ class SpectrumModule(BaseModule):
                     pts_max.append(QPointF(screen_x[last_i], dh * (1.0 - frac_max)))
                     pts_min.append(QPointF(screen_x[last_i], dh * (1.0 - frac_min)))
             
-            def create_spline(points):
-                path = QPainterPath()
-                if not points: return path
-                path.moveTo(points[0])
-                if len(points) >= 4:
-                    path.lineTo(points[1])
-                    for i in range(1, len(points) - 2):
-                        p0, p1, p2, p3 = points[i - 1], points[i], points[i + 1], points[i + 2]
-                        cp1x = p1.x() + (p2.x() - p0.x()) / 6.0
-                        cp1y = p1.y() + (p2.y() - p0.y()) / 6.0
-                        cp2x = p2.x() - (p3.x() - p1.x()) / 6.0
-                        cp2y = p2.y() - (p3.y() - p1.y()) / 6.0
-                        path.cubicTo(cp1x, cp1y, cp2x, cp2y, p2.x(), p2.y())
-                    path.lineTo(points[-1])
-                else:
-                    for p in points[1:]: path.lineTo(p)
-                return path
-
             if len(pts_max) >= 2:
-                path_max = create_spline(pts_max)
-                path_min = create_spline(pts_min)
-                
+                from PySide6.QtGui import QPolygonF
                 if self._channel == "L+R":
-                    # Ribbon fill for Stereo Width
-                    ribbon = QPainterPath(path_max)
-                    ribbon.lineTo(pts_min[-1])
-                    for p in reversed(pts_min[:-1]): ribbon.lineTo(p)
-                    ribbon.closeSubpath()
-                    
-                    # 1. Base fill below the minimum curve (to maintain visual weight)
-                    bg_fill = QPainterPath(path_min)
+                    # 1. Base fill below the minimum curve
                     if is_vertical:
-                        bg_fill.lineTo(0, pts_min[-1].y()); bg_fill.lineTo(0, pts_min[0].y()); bg_fill.closeSubpath()
+                        poly_bg = QPolygonF(pts_min + [QPointF(0, pts_min[-1].y()), QPointF(0, pts_min[0].y())])
                     else:
-                        bg_fill.lineTo(pts_min[-1].x(), dh); bg_fill.lineTo(pts_min[0].x(), dh); bg_fill.closeSubpath()
+                        poly_bg = QPolygonF(pts_min + [QPointF(pts_min[-1].x(), dh), QPointF(pts_min[0].x(), dh)])
                     bc = QColor(Colors.ACCENT); bc.setAlpha(20)
-                    painter.fillPath(bg_fill, QBrush(bc))
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QBrush(bc))
+                    painter.drawPolygon(poly_bg)
 
                     # 2. Vibrant ribbon fill for the stereo difference
+                    poly_ribbon = QPolygonF(pts_max + list(reversed(pts_min)))
                     fc = QColor(Colors.ACCENT_PINK); fc.setAlpha(65)
-                    painter.fillPath(ribbon, QBrush(fc))
-                    
-                    # 3. Glow pen for the max curve (matching mono mode's intensity)
-                    gc_glow = QColor(Colors.ACCENT); gc_glow.setAlpha(40)
-                    painter.setPen(QPen(gc_glow, 3.5))
-                    painter.drawPath(path_max)
-                    painter.setPen(QPen(QColor(Colors.ACCENT), 1.5))
-                    painter.drawPath(path_max)
+                    painter.setBrush(QBrush(fc))
+                    painter.drawPolygon(poly_ribbon)
+
+                    # 3. Crisp luminous max curve
+                    painter.setBrush(Qt.NoBrush)
+                    pen_core = QPen(QColor(Colors.ACCENT), 1.0)
+                    pen_core.setJoinStyle(Qt.MiterJoin)
+                    painter.setPen(pen_core)
+                    painter.drawPolyline(pts_max)
                 else:
                     # Standard solid mono fill
-                    fp = QPainterPath(path_max)
                     if is_vertical:
-                        fp.lineTo(0, pts_max[-1].y()); fp.lineTo(0, pts_max[0].y()); fp.closeSubpath()
+                        poly_mono = QPolygonF(pts_max + [QPointF(0, pts_max[-1].y()), QPointF(0, pts_max[0].y())])
                     else:
-                        fp.lineTo(pts_max[-1].x(), dh); fp.lineTo(pts_max[0].x(), dh); fp.closeSubpath()
-                        
+                        poly_mono = QPolygonF(pts_max + [QPointF(pts_max[-1].x(), dh), QPointF(pts_max[0].x(), dh)])
                     fc = QColor(Colors.ACCENT); fc.setAlpha(15)
-                    painter.fillPath(fp, QBrush(fc))
-                    
-                    gc = QColor(Colors.ACCENT); gc.setAlpha(30)
-                    painter.setPen(QPen(gc, 3.0)); painter.drawPath(path_max)
-                    painter.setPen(QPen(QColor(Colors.ACCENT), 1.2)); painter.drawPath(path_max)
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QBrush(fc))
+                    painter.drawPolygon(poly_mono)
+
+                    painter.setBrush(Qt.NoBrush)
+                    pen_core = QPen(QColor(Colors.ACCENT), 1.0)
+                    pen_core.setJoinStyle(Qt.MiterJoin)
+                    painter.setPen(pen_core)
+                    painter.drawPolyline(pts_max)
 
         if self._show_note and self._smooth_peak_db > -80:
             note = hz_to_note_name(self._smooth_peak_freq)

@@ -134,7 +134,7 @@ class BuildUI:
     def __init__(self, console, app_name=APP_NAME, total_steps=5):
         self.console = console
         self.app_name = app_name
-        self.version = "v1.2.10.0"
+        self.version = "v1.2.11.0"
         self.total_steps = total_steps
         self.current_step = 1
         self.step_title = "Initializing"
@@ -829,7 +829,7 @@ def build():
     ui = get_ui()
 
     # Detect version from main.pyw
-    version = "v1.2.10.0"
+    version = "v1.2.11.0"
     try:
         with open(ENTRY_POINT, "r", encoding="utf-8") as f:
             match = re.search(r'["\'](v\d+\.\d+\.\d+\.\d+)["\']', f.read())

@@ -383,21 +383,13 @@ class OscilloscopeModule(BaseModule):
         v_coords = center - vals * factor
 
         if vertical:
-            points = [QPointF(v_coords[i], t_coords[i]) for i in range(actual_pts)]
+            points = [QPointF(float(v), float(t)) for v, t in zip(v_coords, t_coords)]
         else:
-            points = [QPointF(t_coords[i], v_coords[i]) for i in range(actual_pts)]
+            points = [QPointF(float(t), float(v)) for t, v in zip(t_coords, v_coords)]
 
-        # Luminous bloom / glow pass
-        gc = QColor(color)
-        gc.setAlpha(45)
-        pen_glow = QPen(gc, 3.2)
-        pen_glow.setJoinStyle(Qt.RoundJoin)
-        painter.setPen(pen_glow)
-        painter.drawPolyline(points)
-
-        # Thick luminous core beam pass
-        pen_core = QPen(QColor(color), 1.6)
-        pen_core.setJoinStyle(Qt.RoundJoin)
+        # Crisp luminous core beam pass (1.0px MiterJoin prevents heavy CPU polygon stroke expansion)
+        pen_core = QPen(QColor(color), 1.0)
+        pen_core.setJoinStyle(Qt.MiterJoin)
         painter.setPen(pen_core)
         painter.drawPolyline(points)
 

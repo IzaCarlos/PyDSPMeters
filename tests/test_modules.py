@@ -976,4 +976,74 @@ def test_stereometer_and_spectrum_zero_dim_safety():
         p.end()
 
 
+def test_waveform_pause_caching_and_idle():
+    from app.modules.waveform import WaveformModule
+    from PySide6.QtGui import QImage, QPainter
+    engine = MockEngine()
+    wave = WaveformModule(engine)
+    img = QImage(300, 150, QImage.Format_ARGB32)
+    p = QPainter(img)
+    try:
+        # First render builds cache
+        wave._render(p, 300, 150)
+        assert wave._cached_pixmap is not None
+        cached_pix = wave._cached_pixmap
+
+        # Second render with same write_pos uses cached pixmap
+        wave._render(p, 300, 150)
+        assert wave._cached_pixmap is cached_pix
+
+        # Changing theme invalidates cache
+        wave.on_theme_changed()
+        assert wave._cached_pixmap is None
+    finally:
+        p.end()
+
+
+def test_spectrum_inactive_line_option():
+    from PySide6.QtGui import QImage, QPainter
+    engine = MockEngine()
+    spec = SpectrumModule(engine)
+    assert spec._show_inactive_line is True
+
+    # Check persistence in settings
+    settings = spec.get_settings()
+    assert settings['show_inactive_line'] is True
+
+    settings['show_inactive_line'] = False
+    spec.apply_settings(settings)
+    assert spec._show_inactive_line is False
+
+    # Render with inactive line disabled
+    img = QImage(300, 150, QImage.Format_ARGB32)
+    p = QPainter(img)
+    try:
+        spec._render(p, 300, 150)
+    finally:
+        p.end()
+
+
+def test_oscilloscope_and_stereometer_active_render():
+    from app.modules.oscilloscope import OscilloscopeModule
+    from PySide6.QtGui import QImage, QPainter
+    engine = MockEngine()
+    osc = OscilloscopeModule(engine)
+    stereo = StereometerModule(engine)
+
+    # Active audio signal
+    t = np.linspace(0, 0.05, 1024)
+    data = np.column_stack([
+        np.sin(2 * np.pi * 440 * t).astype(np.float32),
+        np.cos(2 * np.pi * 440 * t).astype(np.float32),
+    ])
+    osc.on_audio_data(data)
+    stereo.on_audio_data(data)
+
+    img = QImage(500, 300, QImage.Format_ARGB32)
+    p = QPainter(img)
+    try:
+        osc._render(p, 500, 300)
+        stereo._render(p, 500, 300)
+    finally:
+        p.end()
 
