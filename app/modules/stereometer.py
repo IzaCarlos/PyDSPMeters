@@ -3,7 +3,7 @@ Stereometer Module: Lissajous / Linear / Scaled stereo display with correlation 
 """
 
 import numpy as np
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPixmap, QImage
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPixmap
 from PySide6.QtCore import Qt, QPointF, QRectF
 
 from app.base_module import BaseModule

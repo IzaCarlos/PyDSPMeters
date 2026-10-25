@@ -3,13 +3,12 @@ Waveform Module: Scrolling waveform display with multi-band coloring and peak hi
 """
 
 import numpy as np
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath
-from PySide6.QtCore import Qt, QRectF
+from PySide6.QtGui import QPainter, QColor, QPen
+from PySide6.QtCore import Qt
 
 from app.base_module import BaseModule
 from app.modules import register_module
-from app.theme import Colors, Fonts
-from app.dsp.filters import MultiBandFilter
+from app.theme import Colors
 from app.dsp import accel as dsp_accel
 
 
@@ -34,7 +33,6 @@ class WaveformModule(BaseModule):
         self.module_key = "waveform"
         super().__init__(audio_engine, title="Waveform", parent=parent)
         self.canvas.set_render_func(self._render)
-        self.canvas.set_antialiasing(False)
 
     def on_theme_changed(self):
         self._cached_pixmap = None
@@ -178,9 +176,15 @@ class WaveformModule(BaseModule):
         pixmap = QPixmap(w, h)
         pixmap.fill(Qt.transparent)
         p = QPainter(pixmap)
-        if not p.isActive():
-            return
+        if p.isActive():
+            p.setRenderHint(QPainter.Antialiasing, True)
+            self._render_waveform(p, w, h)
+            p.end()
+            self._cached_pixmap = pixmap
+            self._cached_key = cache_key
+            painter.drawPixmap(0, 0, pixmap)
 
+    def _render_waveform(self, p, w, h):
         is_vert = self._orientation == "Vertical"
         if self._orientation == "Auto":
             is_vert = h > w * 1.2
@@ -212,20 +216,12 @@ class WaveformModule(BaseModule):
             mins = (min_all[:, 0] + min_all[:, 1]) * 0.5
             rmss = (rms_all[:, 0] + rms_all[:, 1]) * 0.5
             self._draw_wave(p, maxs, mins, rmss, Colors.ACCENT, (w/2 if is_vert else h/2), (w if is_vert else h), "both", is_vert, draw_dim, trace_key="mid")
-            p.end()
-            self._cached_pixmap = pixmap
-            self._cached_key = cache_key
-            painter.drawPixmap(0, 0, pixmap)
             return
         elif self._channel == "Side":
             maxs = (max_all[:, 0] - max_all[:, 1]) * 0.5
             mins = (min_all[:, 0] - min_all[:, 1]) * 0.5
             rmss = np.abs(rms_all[:, 0] - rms_all[:, 1]) * 0.5
             self._draw_wave(p, maxs, mins, rmss, Colors.ACCENT_PURPLE, (w/2 if is_vert else h/2), (w if is_vert else h), "both", is_vert, draw_dim, trace_key="side")
-            p.end()
-            self._cached_pixmap = pixmap
-            self._cached_key = cache_key
-            painter.drawPixmap(0, 0, pixmap)
             return
         else: # L+R or All
             channels = list(range(self.audio_engine.channels))
@@ -262,11 +258,6 @@ class WaveformModule(BaseModule):
             for idx in channels:
                 if idx < len(max_all[0]):
                     self._draw_wave(p, max_all[:, idx], min_all[:, idx], rms_all[:, idx], colors[idx % len(colors)], mid_dim, (w if is_vert else h), "both", is_vert, draw_dim, trace_key=idx)
-
-        p.end()
-        self._cached_pixmap = pixmap
-        self._cached_key = cache_key
-        painter.drawPixmap(0, 0, pixmap)
 
     def _get_trace_gain(self, maxs, mins, trace_key=0):
         mode = getattr(self, "_gain_mode", "Auto Fit")
@@ -311,7 +302,7 @@ class WaveformModule(BaseModule):
         from PySide6.QtCore import QLineF
         h_factor = dim * 0.45
         draw_dim = draw_dim or len(maxs)
-        max_points = min(int(draw_dim), 350)
+        max_points = min(int(draw_dim), self._buf_len)
         if len(maxs) > max_points:
             step = int(np.ceil(len(maxs) / max_points))
             idx = np.arange(0, len(maxs), step)
@@ -358,18 +349,19 @@ class WaveformModule(BaseModule):
             else: base_lines.append(line)
             peak_lines.append(peak_line)
 
-        # 1. Draw Peaks
-        pc = QColor(base_color); pc.setAlpha(35)
-        painter.setPen(QPen(pc, 1))
+        # 1. Draw Peaks (soft glowing bloom envelope)
+        pc = QColor(base_color)
+        pc.setAlpha(45)
+        painter.setPen(QPen(pc, 1.4))
         painter.drawLines(peak_lines)
         
         # 2. Draw RMS Cores
         if base_lines:
-            painter.setPen(QPen(QColor(Colors.METER_LOW), 1))
+            painter.setPen(QPen(QColor(Colors.METER_LOW), 1.0))
             painter.drawLines(base_lines)
         if yellow_lines:
-            painter.setPen(QPen(QColor(Colors.METER_MID), 1))
+            painter.setPen(QPen(QColor(Colors.METER_MID), 1.0))
             painter.drawLines(yellow_lines)
         if red_lines:
-            painter.setPen(QPen(QColor(Colors.METER_HIGH), 1))
+            painter.setPen(QPen(QColor(Colors.METER_HIGH), 1.0))
             painter.drawLines(red_lines)

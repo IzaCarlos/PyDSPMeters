@@ -9,10 +9,10 @@ import traceback
 import numpy as np
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QSizePolicy, QComboBox, QSlider, QCheckBox,
+    QFrame, QSizePolicy, QMenu, QSplitter,
 )
-from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QSize, QTimer, QElapsedTimer
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QIcon, QFontMetrics
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, QElapsedTimer, QPointF
+from PySide6.QtGui import QPainter, QColor, QPen, QFont, QFontMetrics, QPolygonF
 
 from app.theme import Colors, Fonts
 from app.utils import dsp_executor
@@ -134,7 +134,6 @@ class RenderCanvas(_CANVAS_BASE):
             # Match arrows to layout: Vertical Splitter -> Up/Down, Horizontal -> Left/Right
             # RenderCanvas -> BaseModule -> QSplitter
             splitter = self.parent().parentWidget()
-            from PySide6.QtWidgets import QSplitter
             is_vert_splitter = True
             if isinstance(splitter, QSplitter):
                 is_vert_splitter = splitter.orientation() == Qt.Vertical
@@ -142,9 +141,6 @@ class RenderCanvas(_CANVAS_BASE):
             accent = QColor(Colors.ACCENT)
             accent.setAlpha(180)
             painter.setBrush(accent)
-            
-            from PySide6.QtGui import QPolygonF
-            from PySide6.QtCore import QPointF
             
             if is_vert_splitter:
                 # Up/Down arrows
@@ -190,7 +186,6 @@ class RenderCanvas(_CANVAS_BASE):
         if getattr(self.parent(), "_move_mode", False):
             w, h = self.width(), self.height()
             splitter = self.parent().parentWidget()
-            from PySide6.QtWidgets import QSplitter
             if isinstance(splitter, QSplitter) and splitter.orientation() == Qt.Vertical:
                 if event.y() < h / 2:
                     self.parent().move_requested.emit(self.parent(), -1)
@@ -288,8 +283,6 @@ class BaseModule(QWidget):
 
     _font_cache = {}
 
-    _font_cache = {}
-
     @staticmethod
     def get_responsive_font(base_font_func, target_w, target_h, text, max_size=None, min_size=4.0):
         """
@@ -365,16 +358,13 @@ class BaseModule(QWidget):
     def draw_text_badge(painter, rect, align, text, text_pen, bg_color=None):
         """Draws text with a rounded, padded background for readability."""
         if bg_color is None:
-            # Use theme color and alpha
             bg_color = Colors.with_alpha(Colors.BG_BADGE, getattr(Colors, "BG_BADGE_ALPHA", 180))
             
-        from PySide6.QtGui import QFontMetrics
         fm = QFontMetrics(painter.font())
         if hasattr(rect, 'toRect'):
             rect = rect.toRect()
             
         br = fm.boundingRect(rect, align, text)
-        from app.theme import Fonts
         pad_x = int(6 * Fonts.TEXT_SCALE)
         pad_y = int(2 * Fonts.TEXT_SCALE)
         br.adjust(-pad_x, -pad_y, pad_x, pad_y)
@@ -390,7 +380,6 @@ class BaseModule(QWidget):
 
     def contextMenuEvent(self, event):
         """Show settings via right-click."""
-        from PySide6.QtWidgets import QMenu, QSplitter
         menu = QMenu(self)
         
         self.build_context_menu(menu)

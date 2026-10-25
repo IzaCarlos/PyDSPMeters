@@ -3,16 +3,17 @@ Window Manager: Main application window with compact title bar,
 module management, snapping logic, and theme switching.
 """
 
+import sys
 import math
 import time
 import logging
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QMenu, QComboBox, QPushButton, QLabel, QFrame, QApplication,
-    QSizePolicy, QWidgetAction, QGraphicsOpacityEffect,
+    QMenu, QPushButton, QLabel, QFrame, QApplication,
+    QWidgetAction, QGraphicsOpacityEffect,
 )
-from PySide6.QtCore import Qt, QPoint, QRect, QRectF, QSize, Signal, QTimer, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QAction, QColor, QCursor, QIcon, QActionGroup
+from PySide6.QtCore import Qt, QRect, QRectF, QSize, QTimer, QPropertyAnimation, QEasingCurve
+from PySide6.QtGui import QAction, QColor, QCursor, QActionGroup
 
 from app.theme import (
     Colors, Fonts, build_stylesheet, THEME_PRESETS, THEME_GROUPS,
@@ -62,7 +63,6 @@ class SkeletonLoadingOverlay(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._animate)
         self._timer.start(16)
-        import time
         self._birth = time.time()
 
     def set_status(self, text):
@@ -87,7 +87,6 @@ class SkeletonLoadingOverlay(QWidget):
 
     def paintEvent(self, event):
         from PySide6.QtGui import QPainter, QLinearGradient, QPen
-        import time
         with QPainter(self) as p:
             p.setRenderHint(QPainter.Antialiasing)
             
@@ -1321,7 +1320,6 @@ class MainWindow(QMainWindow):
     #  App Bar
 
     def nativeEvent(self, event_type, message):
-        import sys
         if sys.platform != "win32":
             return False, 0
         if getattr(self, "_appbar_applying", False):
@@ -1360,7 +1358,6 @@ class MainWindow(QMainWindow):
             self._rescue_window_if_offscreen()
 
     def _is_snipping_tool_active(self):
-        import sys
         if sys.platform != "win32":
             return False
         try:
@@ -1492,7 +1489,6 @@ class MainWindow(QMainWindow):
             return False
         if not self._appbar_geometry_matches():
             return False
-        import sys
         if sys.platform == "win32":
             try:
                 import ctypes
@@ -1557,7 +1553,6 @@ class MainWindow(QMainWindow):
             self._apply_appbar()
 
     def _set_appbar_topmost(self, enabled):
-        import sys
         if sys.platform != "win32":
             return
         try:
@@ -1577,8 +1572,6 @@ class MainWindow(QMainWindow):
 
     def _apply_appbar(self):
         """Dock the window to the chosen screen edge."""
-        import sys
-        
         if self.pos().x() <= -5000 or self.pos().y() <= -5000:
             screen = QApplication.primaryScreen()
         else:
@@ -1742,7 +1735,6 @@ class MainWindow(QMainWindow):
 
     def _release_appbar(self, restore_window=True):
         """Release the appbar reservation."""
-        import sys
         if sys.platform == "win32":
             self._release_appbar_win32(restore_window=restore_window)
         elif sys.platform == "linux":

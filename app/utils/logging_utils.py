@@ -14,8 +14,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QTextEdit, QFrame, QApplication
 )
-from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QColor, QFont, QIcon, QPalette
+from PySide6.QtCore import Qt, QTimer
 
 from app.theme import Colors, Fonts, build_stylesheet
 from app.settings import SettingsManager

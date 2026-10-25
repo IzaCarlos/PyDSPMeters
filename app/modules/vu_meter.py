@@ -4,7 +4,7 @@ Classic VU Meter Module: Analog-style needle meter with ballistics.
 
 import math
 import numpy as np
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QLinearGradient, QFont
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QLinearGradient, QFont
 from PySide6.QtCore import Qt, QPointF, QRectF
 
 from app.base_module import BaseModule

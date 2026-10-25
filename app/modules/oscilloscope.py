@@ -3,7 +3,7 @@ Oscilloscope Module: Real-time waveform display with zero-crossing trigger.
 """
 
 import numpy as np
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QLinearGradient, QFontMetrics, QImage
+from PySide6.QtGui import QPainter, QColor, QPen, QFontMetrics
 from PySide6.QtCore import Qt, QRectF, QPointF
 
 from app.base_module import BaseModule

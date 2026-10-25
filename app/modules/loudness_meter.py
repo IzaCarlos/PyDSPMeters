@@ -6,7 +6,7 @@ Supports stereo monitoring, configurable meters, and vertical/horizontal modes.
 import threading
 
 import numpy as np
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QLinearGradient
+from PySide6.QtGui import QColor, QPen, QBrush, QLinearGradient
 from PySide6.QtCore import Qt, QRectF
 
 from app.base_module import BaseModule
