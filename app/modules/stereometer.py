@@ -719,7 +719,8 @@ class StereometerModule(BaseModule):
             painter.restore()
             return
 
-        step = max(1, n // self._max_dots)
+        max_dots = min(int(self._max_dots), 768)
+        step = max(1, n // max_dots)
         
         zoom = self._effective_zoom()
         l_seg = left[::step] * zoom
@@ -777,10 +778,18 @@ class StereometerModule(BaseModule):
                 painter.restore()
                 return
             
-            # Crisp phosphor point cloud (1.0px native antialiasing prevents heavy CPU polygon expansion)
-            pen_core = QPen(QColor(color), 1.0)
+            # Bloom halo pass (soft glow)
+            glow_color = QColor(color)
+            glow_color.setAlpha(int(alpha * 0.35))
+            pen_halo = QPen(glow_color, 3.2)
+            pen_halo.setCapStyle(Qt.RoundCap)
+            painter.setPen(pen_halo)
+            painter.drawPoints(points)
+
+            # Core points
+            pen_core = QPen(QColor(color), 1.6)
+            pen_core.setCapStyle(Qt.RoundCap)
             painter.setPen(pen_core)
-            painter.setOpacity(alpha / 255.0)
             painter.drawPoints(points)
 
         elif self._display_mode == "XY Oscilloscope":
@@ -811,9 +820,17 @@ class StereometerModule(BaseModule):
                 painter.restore()
                 return
 
-            # Luminous core beam pass (1.0px MiterJoin avoids CPU polygon expansion)
-            pen_core = QPen(QColor(color), 1.0)
-            pen_core.setJoinStyle(Qt.MiterJoin)
+            # Bloom halo pass (soft glow)
+            glow_color = QColor(color)
+            glow_color.setAlpha(int(alpha * 0.35))
+            pen_halo = QPen(glow_color, 3.0)
+            pen_halo.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen_halo)
+            painter.drawPolyline(points)
+
+            # Core beam
+            pen_core = QPen(QColor(color), 1.5)
+            pen_core.setJoinStyle(Qt.RoundJoin)
             painter.setPen(pen_core)
             painter.drawPolyline(points)
             
@@ -856,9 +873,17 @@ class StereometerModule(BaseModule):
                 painter.restore()
                 return
             
-            # Luminous core beam pass (1.0px MiterJoin avoids CPU polygon expansion)
-            pen_core = QPen(QColor(color), 1.0)
-            pen_core.setJoinStyle(Qt.MiterJoin)
+            # Bloom halo pass (soft glow)
+            glow_color = QColor(color)
+            glow_color.setAlpha(int(alpha * 0.35))
+            pen_halo = QPen(glow_color, 3.0)
+            pen_halo.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen_halo)
+            painter.drawPolyline(points)
+
+            # Core beam
+            pen_core = QPen(QColor(color), 1.5)
+            pen_core.setJoinStyle(Qt.RoundJoin)
             painter.setPen(pen_core)
             painter.drawPolyline(points)
             

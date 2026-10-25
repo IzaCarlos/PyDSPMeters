@@ -537,7 +537,14 @@ class SpectrumModule(BaseModule):
         peak_db = max(float(np.max(mag_l_filtered)), float(np.max(mag_r_filtered)))
         if peak_db <= -89.0:
             if getattr(self, "_show_inactive_line", True):
-                painter.setPen(QPen(QColor(Colors.ACCENT), 1.0))
+                glow_color = QColor(Colors.ACCENT)
+                glow_color.setAlpha(40)
+                painter.setPen(QPen(glow_color, 3.0))
+                if is_vertical:
+                    painter.drawLine(0, 0, 0, h)
+                else:
+                    painter.drawLine(0, int(dh), int(dw), int(dh))
+                painter.setPen(QPen(QColor(Colors.ACCENT), 1.2))
                 if is_vertical:
                     painter.drawLine(0, 0, 0, h)
                 else:
@@ -625,10 +632,17 @@ class SpectrumModule(BaseModule):
                     painter.setBrush(QBrush(fc))
                     painter.drawPolygon(poly_ribbon)
 
-                    # 3. Crisp luminous max curve
+                    # 3. Luminous max curve with bloom halo
+                    glow_color = QColor(Colors.ACCENT)
+                    glow_color.setAlpha(45)
+                    pen_halo = QPen(glow_color, 3.2)
+                    pen_halo.setJoinStyle(Qt.RoundJoin)
+                    painter.setPen(pen_halo)
+                    painter.drawPolyline(pts_max)
+
                     painter.setBrush(Qt.NoBrush)
-                    pen_core = QPen(QColor(Colors.ACCENT), 1.0)
-                    pen_core.setJoinStyle(Qt.MiterJoin)
+                    pen_core = QPen(QColor(Colors.ACCENT), 1.5)
+                    pen_core.setJoinStyle(Qt.RoundJoin)
                     painter.setPen(pen_core)
                     painter.drawPolyline(pts_max)
                 else:
@@ -642,9 +656,16 @@ class SpectrumModule(BaseModule):
                     painter.setBrush(QBrush(fc))
                     painter.drawPolygon(poly_mono)
 
+                    glow_color = QColor(Colors.ACCENT)
+                    glow_color.setAlpha(45)
+                    pen_halo = QPen(glow_color, 3.2)
+                    pen_halo.setJoinStyle(Qt.RoundJoin)
+                    painter.setPen(pen_halo)
+                    painter.drawPolyline(pts_max)
+
                     painter.setBrush(Qt.NoBrush)
-                    pen_core = QPen(QColor(Colors.ACCENT), 1.0)
-                    pen_core.setJoinStyle(Qt.MiterJoin)
+                    pen_core = QPen(QColor(Colors.ACCENT), 1.5)
+                    pen_core.setJoinStyle(Qt.RoundJoin)
                     painter.setPen(pen_core)
                     painter.drawPolyline(pts_max)
 

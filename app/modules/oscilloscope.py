@@ -387,9 +387,17 @@ class OscilloscopeModule(BaseModule):
         else:
             points = [QPointF(float(t), float(v)) for t, v in zip(t_coords, v_coords)]
 
-        # Crisp luminous core beam pass (1.0px MiterJoin prevents heavy CPU polygon stroke expansion)
-        pen_core = QPen(QColor(color), 1.0)
-        pen_core.setJoinStyle(Qt.MiterJoin)
+        # Bloom halo pass (soft glow)
+        glow_color = QColor(color)
+        glow_color.setAlpha(40)
+        pen_halo = QPen(glow_color, 3.2)
+        pen_halo.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen_halo)
+        painter.drawPolyline(points)
+
+        # Core beam pass
+        pen_core = QPen(QColor(color), 1.5)
+        pen_core.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen_core)
         painter.drawPolyline(points)
 

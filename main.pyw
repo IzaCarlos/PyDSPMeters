@@ -142,7 +142,7 @@ class CustomSplashScreen(QSplashScreen):
             f.setPointSize(8)
             p.setFont(f)
             p.setPen(QColor(Colors.BORDER_ACCENT))
-            p.drawText(rect.adjusted(0, 0, -15, -15), Qt.AlignBottom | Qt.AlignRight, "v1.2.11.0")
+            p.drawText(rect.adjusted(0, 0, -15, -15), Qt.AlignBottom | Qt.AlignRight, "v1.2.12.0")
 
             # Status (placed ABOVE progress bar)
             p.setPen(QColor(Colors.TEXT_DIM))
@@ -185,6 +185,15 @@ def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
+
+    # OpenGL GPU surface format (disable vsync swap stall to allow true 60 FPS)
+    try:
+        from PySide6.QtGui import QSurfaceFormat
+        fmt = QSurfaceFormat()
+        fmt.setSwapInterval(0)
+        QSurfaceFormat.setDefaultFormat(fmt)
+    except Exception:
+        pass
 
     app = QApplication(sys.argv)
     app.setApplicationName(SettingsManager.get_window_title())

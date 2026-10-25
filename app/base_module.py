@@ -18,6 +18,12 @@ from app.theme import Colors, Fonts
 from app.utils import dsp_executor
 from app.utils import perf_stats
 
+try:
+    from PySide6.QtOpenGLWidgets import QOpenGLWidget
+    _CANVAS_BASE = QOpenGLWidget
+except ImportError:
+    _CANVAS_BASE = QWidget
+
 
 MODULE_MIN_WIDTH = 48
 MODULE_MIN_CANVAS_HEIGHT = 32
@@ -74,9 +80,10 @@ class ModuleHeader(QFrame):
         self._title.setText(title)
 
 
-class RenderCanvas(QWidget):
+class RenderCanvas(_CANVAS_BASE):
     """
-    Drawing surface for visualizations.
+    Hardware-accelerated drawing surface for visualizations.
+    Uses QOpenGLWidget for GPU rasterization when available, falling back to QWidget.
     Modules set a render callback via set_render_func(fn).
     The callback receives (painter, w, h) with an already-active QPainter.
     """
@@ -238,8 +245,10 @@ class BaseModule(QWidget):
         self.audio_engine.data_ready.connect(self._handle_audio_data)
         self._render_interval_ms = 16
         self._render_timer = QTimer(self)
-        self._render_timer.setSingleShot(True)
+        self._render_timer.setTimerType(Qt.PreciseTimer)
+        self._render_timer.setInterval(self._render_interval_ms)
         self._render_timer.timeout.connect(self._flush_render_update)
+        self._render_timer.start()
         self._last_render_update = QElapsedTimer()
         self._last_render_update.start()
         self._async_audio_enabled = False
@@ -248,6 +257,15 @@ class BaseModule(QWidget):
         self._async_audio_seq = 0
         self._async_audio_closed = False
         self._async_audio_result_ready.connect(self._handle_async_audio_result)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._render_timer.isActive():
+            self._render_timer.start(self._render_interval_ms)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._render_timer.stop()
 
     def update_theme(self):
         self.setStyleSheet(f"#baseModule {{ background: {Colors.BG_DARK}; border: 1px solid {Colors.BORDER}; border-radius: 4px; }}")
@@ -453,7 +471,6 @@ class BaseModule(QWidget):
         finally:
             module_name = getattr(self, "module_key", self.__class__.__name__)
             perf_stats.record_timing(f"module_audio.{module_name}", time.perf_counter() - started)
-        self._request_render_update()
 
     def _queue_async_audio_data(self, data: np.ndarray):
         if self._async_audio_closed:
@@ -514,17 +531,12 @@ class BaseModule(QWidget):
             self._start_next_async_audio_job()
 
     def _request_render_update(self):
-        elapsed = self._last_render_update.elapsed()
-        if elapsed >= self._render_interval_ms:
-            if self._render_timer.isActive():
-                self._render_timer.stop()
-            self._flush_render_update()
-        elif not self._render_timer.isActive():
-            self._render_timer.start(max(1, self._render_interval_ms - elapsed))
+        if not self._render_timer.isActive() and self.isVisible():
+            self._render_timer.start(self._render_interval_ms)
 
     def _flush_render_update(self):
         try:
-            if self.canvas and self.canvas.isVisible():
+            if self.canvas and self.canvas.isVisible() and self.isVisible():
                 self.canvas.update()
                 self._last_render_update.restart()
         except RuntimeError:
