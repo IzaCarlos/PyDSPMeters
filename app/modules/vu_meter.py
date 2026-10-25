@@ -47,7 +47,7 @@ class VUMeterModule(BaseModule):
         self._clip_timer_r = 0.0
         self._ms_l = 1e-12
         self._ms_r = 1e-12
-        self._peak_threshold = -6.0
+        self._peak_threshold = -2.0
         self._clip_threshold = -0.1
         self._cal_offset = 0.0
         self._channel = "L+R" if audio_engine.channels >= 2 else "Left"
@@ -70,7 +70,8 @@ class VUMeterModule(BaseModule):
             "cal_offset": self._cal_offset,
             "style": self._style,
             "show_peak": self._show_peak,
-            "show_clip": self._show_clip
+            "show_clip": self._show_clip,
+            "peak_threshold": self._peak_threshold,
         }
 
     def apply_settings(self, settings):
@@ -82,6 +83,7 @@ class VUMeterModule(BaseModule):
         self._style = self._coerce_style(settings.get("style"), self._style)
         self._show_peak = self._coerce_bool(settings.get("show_peak"), self._show_peak)
         self._show_clip = self._coerce_bool(settings.get("show_clip"), self._show_clip)
+        self._peak_threshold = self._coerce_float(settings.get("peak_threshold"), self._peak_threshold, -30.0, 0.0)
 
     @staticmethod
     def _coerce_bool(value, fallback):
@@ -146,6 +148,15 @@ class VUMeterModule(BaseModule):
             a.setChecked(abs(c - self._cal_offset) < 0.1)
             a.triggered.connect(lambda checked, v=c: setattr(self, "_cal_offset", float(v)))
             calg.addAction(a)
+
+        pm = menu.addMenu("Peak Threshold")
+        pg = QActionGroup(self)
+        for val in [-1, -2, -3, -6, -12]:
+            a = pm.addAction(f"{val} dBFS")
+            a.setCheckable(True)
+            a.setChecked(abs(val - self._peak_threshold) < 0.1)
+            a.triggered.connect(lambda checked, v=val: setattr(self, "_peak_threshold", float(v)))
+            pg.addAction(a)
             
         a = menu.addAction("Peak LED")
         a.setCheckable(True)
@@ -164,41 +175,39 @@ class VUMeterModule(BaseModule):
         # Audio block duration in seconds for integration
         sr = getattr(self.audio_engine, "sample_rate", 44100.0)
         dt = float(len(data)) / float(sr) if sr > 0 else 0.02
-        
-        # Sample peak in dBFS (without calibration offset)
-        pk_l = float(np.max(np.abs(l))) if len(l) > 0 else 0.0
-        pk_r = float(np.max(np.abs(r))) if len(r) > 0 else 0.0
-        peak_dbfs_l = 20.0 * math.log10(max(pk_l, 1e-10))
-        peak_dbfs_r = 20.0 * math.log10(max(pk_r, 1e-10))
-        
-        # Peak & Clip LED triggers (with 180ms hold timer so flashes are clearly visible)
-        hold_time = 0.18
-        if peak_dbfs_l >= self._clip_threshold:
-            self._clip_timer_l = hold_time
-        else:
-            self._clip_timer_l = max(0.0, self._clip_timer_l - dt)
-
-        if peak_dbfs_r >= self._clip_threshold:
-            self._clip_timer_r = hold_time
-        else:
-            self._clip_timer_r = max(0.0, self._clip_timer_r - dt)
-
-        if peak_dbfs_l >= self._peak_threshold:
-            self._peak_timer_l = hold_time
-        else:
-            self._peak_timer_l = max(0.0, self._peak_timer_l - dt)
-
-        if peak_dbfs_r >= self._peak_threshold:
-            self._peak_timer_r = hold_time
-        else:
-            self._peak_timer_r = max(0.0, self._peak_timer_r - dt)
-
-        self._clip_lit_l = self._clip_timer_l > 0.0
-        self._clip_lit_r = self._clip_timer_r > 0.0
-        self._peak_lit_l = self._peak_timer_l > 0.0
-        self._peak_lit_r = self._peak_timer_r > 0.0
+        hold_time = 0.08
 
         if self._channel == "L+R":
+            pk_l = float(np.max(np.abs(l))) if len(l) > 0 else 0.0
+            pk_r = float(np.max(np.abs(r))) if len(r) > 0 else 0.0
+            peak_dbfs_l = 20.0 * math.log10(max(pk_l, 1e-10))
+            peak_dbfs_r = 20.0 * math.log10(max(pk_r, 1e-10))
+
+            if peak_dbfs_l >= self._clip_threshold:
+                self._clip_timer_l = hold_time
+            else:
+                self._clip_timer_l = max(0.0, self._clip_timer_l - dt)
+
+            if peak_dbfs_r >= self._clip_threshold:
+                self._clip_timer_r = hold_time
+            else:
+                self._clip_timer_r = max(0.0, self._clip_timer_r - dt)
+
+            if peak_dbfs_l >= self._peak_threshold:
+                self._peak_timer_l = hold_time
+            else:
+                self._peak_timer_l = max(0.0, self._peak_timer_l - dt)
+
+            if peak_dbfs_r >= self._peak_threshold:
+                self._peak_timer_r = hold_time
+            else:
+                self._peak_timer_r = max(0.0, self._peak_timer_r - dt)
+
+            self._clip_lit_l = self._clip_timer_l > 0.0
+            self._clip_lit_r = self._clip_timer_r > 0.0
+            self._peak_lit_l = self._peak_timer_l > 0.0
+            self._peak_lit_r = self._peak_timer_r > 0.0
+
             curr_ms_l = float(np.mean(l ** 2)) if len(l) > 0 else 0.0
             curr_ms_r = float(np.mean(r ** 2)) if len(r) > 0 else 0.0
             
@@ -298,10 +307,16 @@ class VUMeterModule(BaseModule):
             peak_sig_dbfs = 20.0 * math.log10(max(pk_sig, 1e-10))
             if peak_sig_dbfs >= self._clip_threshold:
                 self._clip_timer_l = self._clip_timer_r = hold_time
+            else:
+                self._clip_timer_l = self._clip_timer_r = max(0.0, self._clip_timer_l - dt)
+
             if peak_sig_dbfs >= self._peak_threshold:
                 self._peak_timer_l = self._peak_timer_r = hold_time
-            self._clip_lit_l = self._clip_lit_r = self._clip_timer_l > 0.0
-            self._peak_lit_l = self._peak_lit_r = self._peak_timer_l > 0.0
+            else:
+                self._peak_timer_l = self._peak_timer_r = max(0.0, self._peak_timer_l - dt)
+
+            self._clip_lit_l = self._clip_lit_r = (self._clip_timer_l > 0.0)
+            self._peak_lit_l = self._peak_lit_r = (self._peak_timer_l > 0.0)
             
             # Peak hold
             decay_step = dt * 14.0

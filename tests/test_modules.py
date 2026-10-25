@@ -183,10 +183,10 @@ def test_vu_sample_peak_and_clip_accurate_dbfs():
     assert not module._peak_lit_l
     assert not module._clip_lit_l
 
-    # 2. Moderate audio at -3 dBFS (amplitude ~0.707) with +10 calibration
-    # Peak LED should light (-3 >= -6 dBFS), but Clip LED MUST NOT light!
+    # 2. Audio crossing peak threshold (-1.4 dBFS >= -2.0 dBFS) with +10 calibration
+    # Peak LED should light, but Clip LED MUST NOT light!
     module._cal_offset = 10.0
-    mod = (0.70 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+    mod = (0.85 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
     module.on_audio_data(np.column_stack([mod, mod]))
     assert module._peak_lit_l
     assert not module._clip_lit_l
@@ -197,6 +197,41 @@ def test_vu_sample_peak_and_clip_accurate_dbfs():
     module.on_audio_data(loud)
     assert module._clip_lit_l
     assert module._clip_lit_r
+
+def test_vu_peak_led_decay_and_mono_channels():
+    engine = MockEngine()
+    module = VUMeterModule(engine)
+    t = np.arange(1024) / 44100.0
+    hit = (0.90 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+    silence = np.zeros(1024, dtype=np.float32)
+
+    # 1. Stereo decay: Peak turns on on hit, then flickers down after silence blocks
+    module._channel = "L+R"
+    module.on_audio_data(np.column_stack([hit, hit]))
+    assert module._peak_lit_l
+    # ~115ms of silence (5 blocks of 23ms > 80ms hold_time)
+    for _ in range(5):
+        module.on_audio_data(np.column_stack([silence, silence]))
+    assert not module._peak_lit_l
+    assert not module._peak_lit_r
+
+    # 2. Mono / selected channel mode decay (verifies no stuck LED bug)
+    for ch in ["Left", "Right", "Mid", "Side"]:
+        module._channel = ch
+        module.on_audio_data(np.column_stack([hit, hit if ch != "Side" else -hit]))
+        assert module._peak_lit_l
+        for _ in range(5):
+            module.on_audio_data(np.column_stack([silence, silence]))
+        assert not module._peak_lit_l, f"Peak LED stayed stuck in channel mode {ch}"
+
+    # 3. Dynamic bass hit rhythm during -12 dB playback: LED triggers on hit, flickers down during steady audio
+    body = (0.25 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+    module._channel = "L+R"
+    module.on_audio_data(np.column_stack([hit, hit]))
+    assert module._peak_lit_l
+    for _ in range(5):
+        module.on_audio_data(np.column_stack([body, body]))
+    assert not module._peak_lit_l
 
 def test_vu_calibration_shifts_needle_without_distorting_clip():
     engine = MockEngine()
@@ -251,6 +286,7 @@ def test_vu_settings_coerce_malformed_user_values():
         "style": len(VU_STYLE_NAMES) + 20,
         "show_peak": "off",
         "show_clip": "yes",
+        "peak_threshold": "not_a_number",
     })
 
     assert module._channel == "L+R"
@@ -258,6 +294,11 @@ def test_vu_settings_coerce_malformed_user_values():
     assert module._style == 0
     assert module._show_peak is False
     assert module._show_clip is True
+    assert module._peak_threshold == -2.0
+
+    module.apply_settings({"peak_threshold": -3.0})
+    assert module._peak_threshold == -3.0
+    assert module.get_settings()["peak_threshold"] == -3.0
 
 def test_vu_all_styles_render_without_errors():
     engine = MockEngine()
